@@ -49,6 +49,7 @@ type Sub struct {
 	Posture     string          `json:"posture"`
 	Paused      bool            `json:"paused"`
 	AI          bool            `json:"ai"`
+	AIRevision  int             `json:"aiRevision,omitempty"`
 	Directive   string          `json:"directive,omitempty"`
 	AIStatus    string          `json:"aiStatus,omitempty"`
 	Status      string          `json:"status,omitempty"`

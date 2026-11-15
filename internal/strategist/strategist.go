@@ -46,16 +46,17 @@ type Config struct {
 }
 
 type subState struct {
-	sessionID     string
-	reports       int
-	lastFrame     int
-	lastLogFrame  int
-	lastDirective string
-	lastThreats   int
-	busy          bool
-	failures      int  // reviews failed in a row
-	retryFrame    int  // no review before this frame (backoff after failures)
-	uncertain     bool // a failed turn may have changed the game; wait for the player to re-enable AI
+	sessionID         string
+	reports           int
+	lastFrame         int
+	lastLogFrame      int
+	lastDirective     string
+	lastThreats       int
+	busy              bool
+	failures          int  // reviews failed in a row
+	retryFrame        int  // no review before this frame (backoff after failures)
+	uncertain         bool // a failed turn may have changed the game; wait for the player to re-enable AI
+	uncertainRevision int
 }
 
 // Strategist runs reviews for AI-enabled sub-commanders.
@@ -241,6 +242,9 @@ func (s *Strategist) due(sub game.Sub, frame int) string {
 		ss = &subState{}
 		s.subs[sub.ID] = ss
 	}
+	if ss.uncertain && sub.AIRevision >= ss.uncertainRevision+2 {
+		ss.uncertain, ss.retryFrame = false, 0
+	}
 	if ss.busy || ss.uncertain || frame < ss.retryFrame {
 		return ""
 	}
@@ -392,12 +396,19 @@ func (s *Strategist) record(info *game.Info, state *game.State, sub game.Sub, re
 
 // fail reports a failed review and backs off: 5 s of game time, doubling up to 2 minutes.
 func (s *Strategist) fail(sub game.Sub, ss *subState, frame int, err error) {
+	revision := sub.AIRevision
+	if _, state, ok := s.game.Snapshot(); ok && state != nil {
+		if current, found := state.Sub(sub.ID); found {
+			revision = current.AIRevision
+		}
+	}
 	s.mu.Lock()
 	ss.failures++
 	ss.retryFrame = frame + seconds(min(5*time.Second<<min(ss.failures-1, 5), 2*time.Minute))
 	var uncertain interface{ Uncertain() bool }
 	if errors.As(err, &uncertain) && uncertain.Uncertain() {
 		ss.uncertain = true
+		ss.uncertainRevision = revision
 	}
 	needsReset := ss.uncertain
 	s.mu.Unlock()
@@ -407,7 +418,7 @@ func (s *Strategist) fail(sub game.Sub, ss *subState, frame int, err error) {
 		msg = msg[:120] + "…"
 	}
 	if needsReset {
-		msg = "turn may have changed the game; toggle AI off and on to retry"
+		msg = "turn may have changed the game; turn AI off for 5 seconds, then on"
 	}
 	s.game.Tell(sub.ID, "status", map[string]any{"text": "strategist error: " + msg})
 }

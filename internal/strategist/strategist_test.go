@@ -51,6 +51,23 @@ func TestUncertainReviewWaitsForPlayerToToggleAI(t *testing.T) {
 	}
 }
 
+func TestUncertainReviewSeesFastToggleBetweenSnapshots(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(Config{Interval: 30 * time.Second, Urgent: 8 * time.Second, MaxInFlight: 1}, game.NewServer("", log), nil, log)
+	state := &game.State{Frame: 100, Subs: []game.Sub{{ID: 1, AI: true, AIRevision: 1}}}
+	s.schedule(state, func(game.Sub, string) {})
+	ss := s.subs[1]
+	s.fail(state.Subs[0], ss, state.Frame, uncertainTestError{})
+	ss.busy = false
+	s.pace.done()
+	state.Frame += seconds(10 * time.Minute)
+	state.Subs[0].AIRevision += 2 // off and on, both between snapshots
+	_, started := s.schedule(state, func(game.Sub, string) {})
+	if started != 1 {
+		t.Fatal("missed the player's off/on reset")
+	}
+}
+
 func TestFailedReviewsBackOff(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := New(Config{Interval: 30 * time.Second, Urgent: 8 * time.Second}, game.NewServer("127.0.0.1:0", log), nil, log)
