@@ -165,12 +165,13 @@ type Server struct {
 	// ErrorLog, when set, is the JSONL file the widget's caught Lua errors are appended to (errorlog.go).
 	ErrorLog string
 
-	mu      sync.Mutex
-	conn    Conn // the widget's link (transport.go)
-	info    *Info
-	state   *State
-	over    bool
-	pending map[int64]chan result
+	mu           sync.Mutex
+	conn         Conn // the widget's link (transport.go)
+	connectionID uint64
+	info         *Info
+	state        *State
+	over         bool
+	pending      map[int64]chan result
 
 	writeMu sync.Mutex
 	errMu   sync.Mutex // one error log append at a time
@@ -179,7 +180,10 @@ type Server struct {
 
 // NewServer creates a server listening on addr once Run is called.
 func NewServer(addr string, log *slog.Logger) *Server {
-	return &Server{addr: addr, log: log, pending: map[int64]chan result{}}
+	s := &Server{addr: addr, log: log, pending: map[int64]chan result{}}
+	// Old file-transport results must not match action IDs after a bridge restart.
+	s.nextID.Store(time.Now().UnixMilli() * 1000)
+	return s
 }
 
 // Run serves the TCP link on the server's address until ctx is cancelled (Serve takes any Listener).
@@ -197,7 +201,14 @@ func (s *Server) attach(conn Conn) {
 	if s.conn != nil {
 		s.conn.Close()
 	}
+	for id, ch := range s.pending {
+		ch <- result{err: ErrOffline}
+		delete(s.pending, id)
+	}
 	s.conn = conn
+	s.connectionID++
+	s.info, s.state = nil, nil
+	s.over = false
 	s.mu.Unlock()
 	go s.serve(conn)
 }
@@ -212,7 +223,7 @@ func (s *Server) serve(conn Conn) {
 			s.log.Warn("bad message from game", "err", err)
 			continue
 		}
-		s.handle(msg)
+		s.handleFrom(conn, msg)
 	}
 	s.mu.Lock()
 	if s.conn == conn {
@@ -227,8 +238,15 @@ func (s *Server) serve(conn Conn) {
 }
 
 func (s *Server) handle(msg message) {
+	s.handleFrom(nil, msg)
+}
+
+func (s *Server) handleFrom(conn Conn, msg message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != nil && s.conn != conn {
+		return
+	}
 	switch msg.Type {
 	case "hello":
 		if msg.Game != nil {
@@ -309,9 +327,15 @@ func (s *Server) Why() string {
 }
 
 func (s *Server) Snapshot() (*Info, *State, bool) {
+	info, state, online, _ := s.SnapshotWithID()
+	return info, state, online
+}
+
+// SnapshotWithID also identifies the connection the snapshot belongs to.
+func (s *Server) SnapshotWithID() (*Info, *State, bool, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.info, s.state, s.conn != nil && !s.over
+	return s.info, s.state, s.conn != nil && !s.over, s.connectionID
 }
 
 func (s *Server) write(msg message) error {

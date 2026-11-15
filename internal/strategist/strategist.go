@@ -125,7 +125,7 @@ func (s *Strategist) Run(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
-		info, state, ok := s.game.Snapshot()
+		info, state, ok, connectionID := s.game.SnapshotWithID()
 		if !ok || info == nil || state == nil || state.Paused {
 			why := s.game.Why()
 			if why == "" {
@@ -134,10 +134,11 @@ func (s *Strategist) Run(ctx context.Context) {
 			idle(why)
 			continue
 		}
-		s.trackGame(info, state)
+		key := connectionKey(info, connectionID)
+		s.trackGame(key, state)
 		s.pace.observe(state.Frame, time.Now())
 		ai, started := s.schedule(state, func(sub game.Sub, reason string) {
-			wg.Go(func() { s.review(ctx, info, state, sub, reason) })
+			wg.Go(func() { s.review(ctx, info, state, sub, reason, key) })
 		})
 		switch {
 		case ai == 0:
@@ -202,13 +203,16 @@ func gameKey(info *game.Info) string {
 
 // trackGame forgets sessions when a different game connects (or the same
 // setup restarts: frames went backwards).
-func (s *Strategist) trackGame(info *game.Info, state *game.State) {
+func connectionKey(info *game.Info, id uint64) string {
+	return fmt.Sprintf("%s|connection:%d", gameKey(info), id)
+}
+
+func (s *Strategist) trackGame(key string, state *game.State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := gameKey(info)
 	if key != s.gameKey || state.Frame+300 < s.lastFrame {
 		if s.gameKey != "" {
-			s.log.Info("new game, starting fresh strategist sessions", "map", info.Map, "faction", info.Faction)
+			s.log.Info("new game connection, starting fresh strategist sessions")
 		}
 		s.gameKey = key
 		clear(s.subs)
@@ -219,8 +223,8 @@ func (s *Strategist) trackGame(info *game.Info, state *game.State) {
 
 // sameGame reports whether the game the turn started in is still connected.
 func (s *Strategist) sameGame(key string) bool {
-	info, _, ok := s.game.Snapshot()
-	return ok && info != nil && gameKey(info) == key
+	info, _, ok, id := s.game.SnapshotWithID()
+	return ok && info != nil && connectionKey(info, id) == key
 }
 
 func seconds(d time.Duration) int {
@@ -281,11 +285,11 @@ func (s *Strategist) due(sub game.Sub, frame int) string {
 	return strings.Join(why, ", ")
 }
 
-func (s *Strategist) review(ctx context.Context, info *game.Info, state *game.State, sub game.Sub, reason string) {
+func (s *Strategist) review(ctx context.Context, info *game.Info, state *game.State, sub game.Sub, reason, key string) {
 	s.mu.Lock()
 	ss := s.subs[sub.ID]
 	s.acting[sub.ID]++
-	s.actingIn[sub.ID] = gameKey(info)
+	s.actingIn[sub.ID] = key
 	first := ss.sessionID == ""
 	s.mu.Unlock()
 	defer func() {
@@ -346,7 +350,7 @@ func (s *Strategist) review(ctx context.Context, info *game.Info, state *game.St
 	s.log.Info("review", "sub", sub.Name, "why", reason, "took", time.Since(start).Round(100*time.Millisecond),
 		"tools", strings.Join(used, ","), "in", int(reply.Tokens.Input), "cached", int(reply.Tokens.Cache.Read), "out", int(reply.Tokens.Output))
 
-	if !s.sameGame(gameKey(info)) {
+	if !s.sameGame(key) {
 		s.log.Info("game changed during review, dropping its result", "sub", sub.Name)
 		return
 	}
