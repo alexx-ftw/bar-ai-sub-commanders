@@ -88,6 +88,10 @@ func parseReply(data []byte) (*opencode.Reply, error) {
 				Server string `json:"server"`
 				Tool   string `json:"tool"`
 				Status string `json:"status"`
+				Result struct {
+					IsError      bool `json:"is_error"`
+					IsErrorCamel bool `json:"isError"`
+				} `json:"result"`
 			} `json:"item"`
 			Usage struct {
 				Input  float64 `json:"input_tokens"`
@@ -114,6 +118,9 @@ func parseReply(data []byte) (*opencode.Reply, error) {
 			case "agent_message":
 				reply.Text = event.Item.Text
 			case "mcp_tool_call":
+				if event.Item.Status == "failed" || event.Item.Result.IsError || event.Item.Result.IsErrorCamel {
+					return nil, uncertainError{fmt.Errorf("game tool %s failed after it may have acted", event.Item.Tool)}
+				}
 				reply.Tools = append(reply.Tools, opencode.ToolCall{Tool: event.Item.Tool, Status: event.Item.Status})
 			}
 		}

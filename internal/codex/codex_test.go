@@ -37,6 +37,21 @@ func TestParseReply(t *testing.T) {
 	}
 }
 
+func TestCompletedTurnWithFailedToolIsUncertain(t *testing.T) {
+	for _, tool := range []string{
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"add_zone","status":"failed"}}`,
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"add_zone","status":"completed","result":{"is_error":true}}}`,
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"add_zone","status":"completed","result":{"isError":true}}}`,
+	} {
+		data := tool + "\n" + `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n" + `{"type":"turn.completed"}`
+		_, err := parseReply([]byte(data))
+		var marker interface{ Uncertain() bool }
+		if !errors.As(err, &marker) || !marker.Uncertain() {
+			t.Fatalf("failed tool accepted: %v", err)
+		}
+	}
+}
+
 func TestSendInvokesCodexWithIsolatedConfigAndPrompt(t *testing.T) {
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "codex")
