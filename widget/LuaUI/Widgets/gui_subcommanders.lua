@@ -200,7 +200,7 @@ local savedConfig -- from SetConfigData, used to restore after /luaui reload
 local orderInput -- { sub, text } while typing standing orders
 local startOrderInput, stopOrderInput -- defined with the panel
 
-local panel = { x = nil, y = nil, collapsed = false, dragging = false }
+local panel = { x = nil, y = nil, collapsed = false, dragging = false, scroll = 0, scrollMax = 0 }
 local buttons = {}
 local font
 
@@ -9299,7 +9299,7 @@ local function addButton(x1, y1, x2, y2, label, onClick, highlight, size)
 	end
 	glRect(x1, y1, x2, y2)
 	queueText(label, (x1 + x2) * 0.5, (y1 + y2) * 0.5, size, "ocv", 1, 1, 1, 1)
-	buttons[#buttons + 1] = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, onClick = onClick }
+	buttons[#buttons + 1] = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, onClick = onClick, label = label }
 end
 
 local function buttonRow(x1, x2, y, h, s, specs, fontSize)
@@ -9367,15 +9367,14 @@ local function drawSubRow(sub, x1, x2, y, s)
 		end,
 	}
 	y = y - rowH
-	local line = sformat("B%d F%d U%d  -%.1fm/s  %s", c.builders, c.factories, c.combat + c.nanos, sub.spendM, #sub.threats > 0 and (#sub.threats .. " threats!") or "")
-	queueText(line, x1 + 12 * s, y - 9 * s, 11 * s, "ov", 0.75, 0.75, 0.8, 1)
+	local line = sformat("Builders %d  Factories %d  Units %d  -%.1f metal/s%s", c.builders, c.factories, c.combat + c.nanos, sub.spendM, #sub.threats > 0 and ("  |  " .. #sub.threats .. " threats!") or "")
+	queueText(line, x1 + 12 * s, y - 9 * s, 11 * s, "ov", 0.8, 0.8, 0.85, 1)
 	y = y - 18 * s
-	queueText(truncate(sub.status or "", 58), x1 + 12 * s, y - 8 * s, 11 * s, "ov", sub.color[1], sub.color[2], sub.color[3], 1)
+	queueText(truncate("Activity: " .. (sub.status or "idle"), 58), x1 + 12 * s, y - 8 * s, 11 * s, "ov", sub.color[1], sub.color[2], sub.color[3], 1)
 	y = y - 18 * s
-	if sub.ai then
-		queueText(truncate("AI: " .. (sub.aiStatus or "waiting for the strategist"), 58), x1 + 12 * s, y - 8 * s, 11 * s, "ov", 0.78, 0.65, 1, 1)
-		y = y - 16 * s
-	end
+	local aiText = sub.ai and (sub.aiStatus or "waiting for the strategist") or "off"
+	queueText(truncate("Strategist: " .. aiText, 58), x1 + 12 * s, y - 8 * s, 11 * s, "ov", sub.ai and 0.78 or 0.62, sub.ai and 0.65 or 0.62, sub.ai and 1 or 0.65, 1)
+	y = y - 16 * s
 	if sub.directive and not (orderInput and orderInput.sub == sub) then
 		queueText(truncate("Orders: " .. sub.directive, 58), x1 + 12 * s, y - 8 * s, 11 * s, "ov", 1, 0.9, 0.55, 1)
 		y = y - 16 * s
@@ -9486,7 +9485,7 @@ local function drawActiveControls(sub, x1, x2, y, s)
 		{ sub.ai and "AI: on" or "AI: off", function()
 			setAI(sub, not sub.ai)
 		end, sub.ai and { 0.78, 0.65, 1 } or nil },
-		{ typing and "Save orders" or "Orders…", function()
+		{ typing and "Save orders" or (sub.directive and "Edit orders…" or "Give orders…"), function()
 			if typing then
 				stopOrderInput(true)
 			else
@@ -9527,7 +9526,7 @@ end
 
 local function panelGeometry()
 	local vsx, vsy = Spring.GetViewGeometry()
-	local s = uiScale()
+	local s = min(uiScale(), vsx / 390)
 	local w = 390 * s
 	if not panel.x then
 		panel.x = vsx - w - 12 * s
@@ -9548,11 +9547,12 @@ local function drawPanel()
 	local headerH = 28 * s
 	glColor(0.05, 0.05, 0.07, 0.85)
 	glRect(x1, y - headerH, x2, y)
-	queueText("Sub-Commanders", x1 + pad, y - headerH * 0.5, 15 * s, "ov", 1, 0.85, 0.4, 1)
+	local title = panel.scrollMax > 0 and "Sub-Commanders ↕" or "Sub-Commanders"
+	queueText(title, x1 + pad, y - headerH * 0.5, 15 * s, "ov", 1, 0.85, 0.4, 1)
 	local link = WG.SubCommandersAI and WG.SubCommandersAI.linkStatus and WG.SubCommandersAI.linkStatus()
 	if link then
 		local online = link == "online"
-		local titleW = font and font:GetTextWidth("Sub-Commanders") * 15 * s or 120 * s
+		local titleW = font and font:GetTextWidth(title) * 15 * s or 120 * s
 		queueText("AI " .. link, x1 + pad + titleW + 10 * s, y - headerH * 0.5, 10.5 * s, "ov", online and 0.78 or 0.6, online and 0.65 or 0.6, online and 1 or 0.6, 1)
 	end
 	panel.header = { x1 = x1, y1 = y - headerH, x2 = x2 - 150 * s, y2 = y }
@@ -9564,10 +9564,17 @@ local function drawPanel()
 		panel.collapsed = not panel.collapsed
 	end, nil, 12 * s)
 	y = y - headerH
+	panel.headerButtonCount = #buttons
+	panel.flushTexts()
 	if panel.collapsed then
 		panel.bottom = y
+		panel.scroll, panel.scrollMax = 0, 0
 		return
 	end
+	local clipBottom = min(12 * s, max(0, y - 1))
+	panel.scroll = min(panel.scroll or 0, panel.scrollMax or 0)
+	gl.Scissor(x1, clipBottom, x2 - x1, max(0, y - clipBottom))
+	y = y + panel.scroll
 	if not canControl then
 		queueText("Unit-control widgets are disabled in this game.", x1 + pad, y - 12 * s, 11 * s, "ov", 1, 0.5, 0.4, 1)
 		y = y - 22 * s
@@ -9587,15 +9594,19 @@ local function drawPanel()
 		queueText("Drag on the map to add a zone · click = circle · shift = keep drawing · right-click = done", x1 + pad, y - 10 * s, 10 * s, "ov", 1, 0.9, 0.5, 1)
 		y = y - 20 * s
 	end
-	panel.bottom = y - pad
+	local contentBottom = y - pad - panel.scroll
+	panel.scrollMax = max(0, clipBottom - contentBottom)
+	panel.scroll = min(panel.scroll, panel.scrollMax)
+	panel.bottom = max(clipBottom, min(top - headerH, contentBottom))
+	panel.flushTexts()
 end
 
 local function drawPanelBackground(x1, x2, top, bottom)
-	glColor(0.05, 0.05, 0.07, 0.62)
+	glColor(0.05, 0.05, 0.07, 0.86)
 	glRect(x1, bottom, x2, top)
 end
 
-local function flushTexts()
+panel.flushTexts = function()
 	if not font then
 		font = WG.fonts and WG.fonts.getFont and WG.fonts.getFont() or gl.LoadFont("FreeSansBold.otf", 32, 6, 1.6)
 	end
@@ -9789,9 +9800,13 @@ function widget:DrawScreen()
 	if panel.bottom then
 		drawPanelBackground(x1, x2, top, panel.bottom)
 	end
-	drawPanel()
+	local ok, err = pcall(drawPanel)
+	gl.Scissor(false)
+	if not ok then
+		error(err)
+	end
 	drawZoneLabels(s)
-	flushTexts()
+	panel.flushTexts()
 	glColor(1, 1, 1, 1)
 end
 
@@ -9812,7 +9827,54 @@ function widget:IsAbove(x, y)
 end
 
 function widget:GetTooltip(x, y)
-	return "Sub-Commanders: select units and press Assign sel. Right-click Role/Spend to cycle backwards."
+	if not overPanel(x, y) then
+		return nil
+	end
+	for i = #buttons, 1, -1 do
+		local b = buttons[i]
+		if (i <= panel.headerButtonCount or y < panel.header.y1) and x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 then
+			local label = b.label or ""
+			if label:find("orders", 1, true) then
+				return "Write standing instructions for this sub-commander's AI. Clear the text to remove them."
+			elseif label:find("AI:", 1, true) then
+				return "Turn the AI strategist on or off for this sub-commander. Its automatic role continues."
+			elseif label:find("Autonomy:", 1, true) then
+				return "Choose how much the sub-commander does by itself. Right-click to cycle backwards."
+			elseif label:find("Role:", 1, true) or label:find("Spend:", 1, true) or label:find("Style:", 1, true) or label:find("Commander:", 1, true) then
+				return "Click to change; right-click to cycle backwards."
+			elseif label == "Assign sel." then
+				return "Give the selected units to this sub-commander."
+			elseif label == "Release sel." then
+				return "Take the selected units back from this sub-commander."
+			elseif label == "Select units" then
+				return "Select this sub-commander's units."
+			elseif label == "Delete" then
+				return "Delete this sub-commander and release its units."
+			elseif label == "+ New" then
+				return "Create a sub-commander. Right-click to create a Defense sub-commander."
+			elseif label == "▸" or label == "▾" then
+				return "Show or hide the sub-commander list."
+			elseif label == "Pause" or label == "Resume" then
+				return "Pause or resume this sub-commander's automatic decisions."
+			elseif label == "+ Zone" or label == "Drawing…" then
+				return "Draw an area for this sub-commander, or stop drawing."
+			elseif label:lower():find("zones", 1, true) then
+				return "Use zones chosen automatically for this role."
+			elseif label:find("Focus:", 1, true) then
+				return "Use the selected unit types as this sub-commander's production focus."
+			elseif label:find("Raids:", 1, true) then
+				return "Turn the army's automatic raids on or off."
+			elseif label:find("Nukes:", 1, true) or label:find("Juno:", 1, true) then
+				return "Switch automatic firing on or off for this weapon."
+			elseif label == "Bold" or label == "Careful" then
+				return "Change how cautiously the commander behaves."
+			elseif label == "" then
+				return "Select this sub-commander to see its controls and recent activity."
+			end
+			return label .. ": click to change."
+		end
+	end
+	return panel.scrollMax > 0 and "Scroll to see more. Drag the header to move the panel." or "Drag the header to move the panel."
 end
 
 local function worldPos(x, y)
@@ -9826,7 +9888,7 @@ function widget:MousePress(x, y, button)
 	if overPanel(x, y) then
 		for i = #buttons, 1, -1 do
 			local b = buttons[i]
-			if x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 then
+			if (i <= panel.headerButtonCount or y < panel.header.y1) and x >= b.x1 and x <= b.x2 and y >= b.y1 and y <= b.y2 then
 				b.onClick(button)
 				return true
 			end
@@ -9849,6 +9911,19 @@ function widget:MousePress(x, y, button)
 				return true
 			end
 		end
+	end
+	return false
+end
+
+function widget:MouseWheel(up, value)
+	if Spring.IsGUIHidden and Spring.IsGUIHidden() then
+		return false
+	end
+	local x, y = Spring.GetMouseState()
+	if not panel.collapsed and overPanel(x, y) and panel.scrollMax > 0 then
+		local _, _, _, s = panelGeometry()
+		panel.scroll = max(0, min(panel.scrollMax, panel.scroll + (up and -1 or 1) * abs(value or 1) * 48 * s))
+		return true
 	end
 	return false
 end
