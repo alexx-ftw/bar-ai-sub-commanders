@@ -104,17 +104,17 @@ func TestFileTransport(t *testing.T) {
 		got, err = s.Do(ctx, 2, "set_posture", map[string]any{"posture": "spend"})
 		done <- err
 	}()
-	var id float64
+	var id string
 	waitFor("action", func() bool {
 		for _, m := range readOut() {
 			if m["type"] == "action" {
-				id = m["id"].(float64)
+				id = m["id"].(string)
 				return true
 			}
 		}
 		return false
 	})
-	appendLine("s1.w2b.0.jsonl", `{"type":"result","id":`+strings.TrimSuffix(strings.TrimSuffix(jsonNum(id), ".0"), ".")+`,"ok":true,"data":{"done":true}}`)
+	appendLine("s1.w2b.0.jsonl", `{"type":"result","id":"`+id+`","ok":true,"data":{"done":true}}`)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,39 @@ func TestFileSegmentsAndCleanup(t *testing.T) {
 	}
 }
 
-func jsonNum(f float64) string {
-	b, _ := json.Marshal(f)
-	return string(b)
+func TestFileReconnectStartsAtRemainingSegmentAndWaitsForHello(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.w2b.3.jsonl")
+	if err := os.WriteFile(path, []byte("{\"type\":\"state\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := newFileConn(dir, "s1")
+	defer c.Close()
+	sc := bufio.NewScanner(c)
+	if !sc.Scan() || sc.Text() != `{"type":"state"}` {
+		t.Fatalf("remaining segment: %q", sc.Text())
+	}
+	select {
+	case <-c.ready:
+		t.Fatal("bridge must not ping before receiving a hello")
+	default:
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"type\":\"hello\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !sc.Scan() || sc.Text() != `{"type":"hello"}` {
+		t.Fatalf("hello: %q", sc.Text())
+	}
+	select {
+	case <-c.ready:
+	default:
+		t.Fatal("hello did not start pings")
+	}
 }

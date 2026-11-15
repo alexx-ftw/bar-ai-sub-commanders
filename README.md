@@ -215,6 +215,26 @@ make run MODEL=myllm/my-model      # builds bin/scbridge and starts `opencode se
 
 Stop the container first if it runs (both use port 7878).
 
+### Option C: Codex
+
+Install and sign in to the Codex CLI, then start the bridge directly (no opencode or separate API key):
+
+```sh
+make build
+./bin/scbridge -backend codex -game-files "$HOME/.var/app/info.beyondallreason.bar/data/LuaUI/Config/scbridge"
+```
+
+The path above is for the Linux Flatpak; use your BAR data folder's `LuaUI/Config/scbridge` elsewhere.
+Set `-codex-model` to select a Codex model. Reviews use your Codex quota, and each sub-commander with
+AI enabled generates repeated reviews. The Codex backend runs one review at a time and uses a read-only
+filesystem sandbox; its game tools can act only for the sub-commander currently being reviewed. Its
+reviews are independent, so each includes the current game report and instructions.
+Codex does not run the post-game lesson debrief. If a review fails after calling a game tool, toggle that
+sub-commander's AI off and on after checking its state before allowing another review.
+
+In game, turn on AI for a sub-commander, or use `/luaui autopilot ai` for the autopilot's sub-commanders.
+Stop the bridge with Ctrl-C. Do not run another bridge against the same game at the same time.
+
 ### Orders from chat
 
 Press Enter, start the message with `@` and send it:

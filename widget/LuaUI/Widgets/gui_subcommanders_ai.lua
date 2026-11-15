@@ -344,7 +344,7 @@ local function onMessage(msg)
 		if not okApply then
 			data, err = nil, tostring(data)
 		end
-		send({ type = "result", id = msg.id, ok = data ~= nil, data = data ~= true and data or nil, error = err })
+		send({ type = "result", id = msg.id, ok = data ~= nil, rejected = okApply and data == nil or nil, data = data ~= true and data or nil, error = err })
 	end
 end
 

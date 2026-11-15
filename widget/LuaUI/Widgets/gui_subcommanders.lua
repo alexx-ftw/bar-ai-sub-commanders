@@ -8502,6 +8502,7 @@ local function summarize(sub)
 		dodges = sub.dodges, -- units that stepped out of incoming fire so far
 		paused = sub.paused,
 		ai = sub.ai or false,
+		aiRevision = sub.aiRevision or 0,
 		directive = sub.directive,
 		aiStatus = sub.aiStatus,
 		status = sub.status,
@@ -8805,7 +8806,11 @@ local function setDirective(sub, text)
 end
 
 local function setAI(sub, on)
-	sub.ai = on and true or false
+	local nextAI = on and true or false
+	if (sub.ai and true or false) ~= nextAI then
+		sub.aiRevision = (sub.aiRevision or 0) + 1
+	end
+	sub.ai = nextAI
 	log(sub, sub.ai and "AI strategist on" or "AI strategist off")
 end
 
@@ -10918,7 +10923,7 @@ local function serialize()
 				focus[#focus + 1] = defs[defID].name
 			end
 		end
-		out[#out + 1] = { id = sub.id, name = sub.name, role = sub.role, posture = sub.posture, paused = sub.paused, zones = not sub.autoZones and sub.zones or {}, autoZones = sub.autoZones or false, autonomy = sub.autonomy, raids = sub.raids, colorIndex = sub.colorIndex, units = units, focus = focus, ai = sub.ai, directive = sub.directive,
+		out[#out + 1] = { id = sub.id, name = sub.name, role = sub.role, posture = sub.posture, paused = sub.paused, zones = not sub.autoZones and sub.zones or {}, autoZones = sub.autoZones or false, autonomy = sub.autonomy, raids = sub.raids, colorIndex = sub.colorIndex, units = units, focus = focus, ai = sub.ai, aiRevision = sub.aiRevision, directive = sub.directive,
 			shareTo = sub.shareTo, factoryShares = sub.factoryShares }
 	end
 	return out
@@ -10939,6 +10944,7 @@ local function restore(game)
 		sub.posture = POSTURE_INFO[s.posture] and s.posture or "balanced"
 		sub.paused = s.paused and true or false
 		sub.ai = s.ai and true or false
+		sub.aiRevision = s.aiRevision or 0
 		sub.directive = s.directive
 		sub.zones = s.zones or {}
 		-- older saves have no flag: zones were drawn (or claimed) by then

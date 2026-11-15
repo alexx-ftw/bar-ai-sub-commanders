@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,7 @@ type Sub struct {
 	Posture     string          `json:"posture"`
 	Paused      bool            `json:"paused"`
 	AI          bool            `json:"ai"`
+	AIRevision  int             `json:"aiRevision,omitempty"`
 	Directive   string          `json:"directive,omitempty"`
 	AIStatus    string          `json:"aiStatus,omitempty"`
 	Status      string          `json:"status,omitempty"`
@@ -127,22 +129,55 @@ func (s *State) Sub(id int) (Sub, bool) {
 }
 
 type message struct {
-	Type  string          `json:"type"`
-	ID    int64           `json:"id,omitzero"`
-	Sub   int             `json:"sub,omitzero"`
-	Op    string          `json:"op,omitempty"`
-	Args  map[string]any  `json:"args,omitempty"`
-	OK    bool            `json:"ok,omitzero"`
-	Error string          `json:"error,omitempty"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Game  *Info           `json:"game,omitempty"`
-	State *State          `json:"state,omitempty"`
+	Type     string          `json:"type"`
+	ID       messageID       `json:"id,omitzero"`
+	Sub      int             `json:"sub,omitzero"`
+	Op       string          `json:"op,omitempty"`
+	Args     map[string]any  `json:"args,omitempty"`
+	OK       bool            `json:"ok,omitzero"`
+	Rejected bool            `json:"rejected,omitempty"`
+	Error    string          `json:"error,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Game     *Info           `json:"game,omitempty"`
+	State    *State          `json:"state,omitempty"`
+}
+
+// Positive bridge action IDs are strings so Lua's JSON encoder cannot round them.
+// Negative decision IDs remain numbers for older widgets.
+type messageID int64
+
+func (id messageID) MarshalJSON() ([]byte, error) {
+	if id > 0 {
+		return json.Marshal(strconv.FormatInt(int64(id), 10))
+	}
+	return []byte(strconv.FormatInt(int64(id), 10)), nil
+}
+
+func (id *messageID) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		data = []byte(value)
+	}
+	n, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return err
+	}
+	*id = messageID(n)
+	return nil
 }
 
 type result struct {
 	data json.RawMessage
 	err  error
 }
+
+// RejectedError is an explicit game rejection, not an ambiguous transport failure.
+type RejectedError struct{ Message string }
+
+func (e *RejectedError) Error() string { return e.Message }
 
 // ErrOffline is returned when no game is connected.
 var ErrOffline = errors.New("game is not connected")
@@ -165,12 +200,13 @@ type Server struct {
 	// ErrorLog, when set, is the JSONL file the widget's caught Lua errors are appended to (errorlog.go).
 	ErrorLog string
 
-	mu      sync.Mutex
-	conn    Conn // the widget's link (transport.go)
-	info    *Info
-	state   *State
-	over    bool
-	pending map[int64]chan result
+	mu           sync.Mutex
+	conn         Conn // the widget's link (transport.go)
+	connectionID uint64
+	info         *Info
+	state        *State
+	over         bool
+	pending      map[int64]chan result
 
 	writeMu sync.Mutex
 	errMu   sync.Mutex // one error log append at a time
@@ -179,7 +215,10 @@ type Server struct {
 
 // NewServer creates a server listening on addr once Run is called.
 func NewServer(addr string, log *slog.Logger) *Server {
-	return &Server{addr: addr, log: log, pending: map[int64]chan result{}}
+	s := &Server{addr: addr, log: log, pending: map[int64]chan result{}}
+	// Old file-transport results must not match action IDs after a bridge restart.
+	s.nextID.Store(time.Now().UnixNano())
+	return s
 }
 
 // Run serves the TCP link on the server's address until ctx is cancelled (Serve takes any Listener).
@@ -197,7 +236,14 @@ func (s *Server) attach(conn Conn) {
 	if s.conn != nil {
 		s.conn.Close()
 	}
+	for id, ch := range s.pending {
+		ch <- result{err: ErrOffline}
+		delete(s.pending, id)
+	}
 	s.conn = conn
+	s.connectionID++
+	s.info, s.state = nil, nil
+	s.over = false
 	s.mu.Unlock()
 	go s.serve(conn)
 }
@@ -212,7 +258,7 @@ func (s *Server) serve(conn Conn) {
 			s.log.Warn("bad message from game", "err", err)
 			continue
 		}
-		s.handle(msg)
+		s.handleFrom(conn, msg)
 	}
 	s.mu.Lock()
 	if s.conn == conn {
@@ -227,8 +273,15 @@ func (s *Server) serve(conn Conn) {
 }
 
 func (s *Server) handle(msg message) {
+	s.handleFrom(nil, msg)
+}
+
+func (s *Server) handleFrom(conn Conn, msg message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn != nil && s.conn != conn {
+		return
+	}
 	switch msg.Type {
 	case "hello":
 		if msg.Game != nil {
@@ -273,10 +326,12 @@ func (s *Server) handle(msg message) {
 			}()
 		}
 	case "result":
-		if ch, ok := s.pending[msg.ID]; ok {
-			delete(s.pending, msg.ID)
+		if ch, ok := s.pending[int64(msg.ID)]; ok {
+			delete(s.pending, int64(msg.ID))
 			if msg.OK {
 				ch <- result{data: msg.Data}
+			} else if msg.Rejected {
+				ch <- result{err: &RejectedError{Message: msg.Error}}
 			} else {
 				ch <- result{err: errors.New(msg.Error)}
 			}
@@ -309,24 +364,44 @@ func (s *Server) Why() string {
 }
 
 func (s *Server) Snapshot() (*Info, *State, bool) {
+	info, state, online, _ := s.SnapshotWithID()
+	return info, state, online
+}
+
+// SnapshotWithID also identifies the connection the snapshot belongs to.
+func (s *Server) SnapshotWithID() (*Info, *State, bool, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.info, s.state, s.conn != nil && !s.over
+	return s.info, s.state, s.conn != nil && !s.over, s.connectionID
 }
 
 func (s *Server) write(msg message) error {
 	s.mu.Lock()
 	conn := s.conn
+	connectionID := s.connectionID
 	s.mu.Unlock()
 	if conn == nil {
 		return ErrOffline
 	}
+	return s.writeTo(context.Background(), conn, connectionID, msg)
+}
+
+func (s *Server) writeTo(ctx context.Context, conn Conn, connectionID uint64, msg message) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.conn != conn || s.connectionID != connectionID {
+		s.mu.Unlock()
+		return ErrOffline
+	}
+	s.mu.Unlock()
 	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		d.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	}
@@ -336,9 +411,26 @@ func (s *Server) write(msg message) error {
 
 // Do sends an action to a sub-commander and waits for the widget's answer.
 func (s *Server) Do(ctx context.Context, sub int, op string, args map[string]any) (json.RawMessage, error) {
+	return s.do(ctx, 0, sub, op, args)
+}
+
+// DoFor sends only if the connection authorized by the caller is still current.
+func (s *Server) DoFor(ctx context.Context, connectionID uint64, sub int, op string, args map[string]any) (json.RawMessage, error) {
+	if connectionID == 0 {
+		return nil, ErrOffline
+	}
+	return s.do(ctx, connectionID, sub, op, args)
+}
+
+func (s *Server) do(ctx context.Context, expectedID uint64, sub int, op string, args map[string]any) (json.RawMessage, error) {
 	id := s.nextID.Add(1)
 	ch := make(chan result, 1)
 	s.mu.Lock()
+	conn, connectionID := s.conn, s.connectionID
+	if conn == nil || (expectedID != 0 && connectionID != expectedID) {
+		s.mu.Unlock()
+		return nil, ErrOffline
+	}
 	s.pending[id] = ch
 	s.mu.Unlock()
 	defer func() {
@@ -346,7 +438,7 @@ func (s *Server) Do(ctx context.Context, sub int, op string, args map[string]any
 		delete(s.pending, id)
 		s.mu.Unlock()
 	}()
-	if err := s.write(message{Type: "action", ID: id, Sub: sub, Op: op, Args: args}); err != nil {
+	if err := s.writeTo(ctx, conn, connectionID, message{Type: "action", ID: messageID(id), Sub: sub, Op: op, Args: args}); err != nil {
 		return nil, err
 	}
 	// 30 s: over the file transport (Docker Desktop's mount, polled) a widget's answer arrived after the
@@ -381,7 +473,21 @@ func (s *Server) decide(msg message) {
 
 // Tell sends an action without waiting (status lines, notes).
 func (s *Server) Tell(sub int, op string, args map[string]any) {
-	if err := s.write(message{Type: "action", ID: s.nextID.Add(1), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
+	if err := s.write(message{Type: "action", ID: messageID(s.nextID.Add(1)), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
+		s.log.Warn("tell", "op", op, "err", err)
+	}
+}
+
+// TellFor only sends a status or note to the connection that started the review.
+func (s *Server) TellFor(connectionID uint64, sub int, op string, args map[string]any) {
+	s.mu.Lock()
+	conn := s.conn
+	current := s.connectionID
+	s.mu.Unlock()
+	if conn == nil || connectionID == 0 || current != connectionID {
+		return
+	}
+	if err := s.writeTo(context.Background(), conn, connectionID, message{Type: "action", ID: messageID(s.nextID.Add(1)), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
 		s.log.Warn("tell", "op", op, "err", err)
 	}
 }

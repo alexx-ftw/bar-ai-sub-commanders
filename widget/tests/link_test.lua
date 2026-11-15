@@ -121,5 +121,14 @@ return {
 		l.update()
 		T.eq(l.status(), "connecting")
 		T.eq(readAll(dir .. "session.txt"), "s1")
+		now.t = 41
+		l.update()
+		T.eq(l.status(), "connecting", "old bridge messages must not be replayed")
+		f = io.open(dir .. "s1.b2w.jsonl", "a")
+		f:write("config|\n")
+		f:close()
+		now.t = 42
+		l.update()
+		T.eq(l.status(), "online", "only a new bridge message reconnects it")
 	end,
 }

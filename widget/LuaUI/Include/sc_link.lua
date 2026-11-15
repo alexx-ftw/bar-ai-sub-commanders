@@ -110,6 +110,12 @@ return function(opts)
 		f:write(L.session)
 		f:close()
 		local seg, written, inOffset, lastRead = L.segment or 0, 0, 0, -1
+		-- On reconnect, old bridge actions have already been applied and must not be replayed.
+		local old = fio.open(DIR .. L.session .. ".b2w.jsonl", "r")
+		if old then
+			inOffset = old:seek("end") or 0
+			old:close()
+		end
 		-- each write opens the segment, appends and closes it: Docker Desktop's file sharing shows the
 		-- bridge's container what was appended only once the writer closes the file (a segment held open
 		-- reached the bridge only when full, an hour into the game)
