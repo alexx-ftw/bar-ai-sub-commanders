@@ -150,3 +150,26 @@ func TestCanceledActionIsNotWritten(t *testing.T) {
 		t.Fatalf("canceled action wrote %q, %v", b[:n], err)
 	}
 }
+
+func TestExplicitRejectionIsDistinguishedFromFailure(t *testing.T) {
+	s := NewServer("", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tt := range []struct {
+		msg      string
+		rejected bool
+	}{
+		{`{"type":"result","id":"1","ok":false,"rejected":true,"error":"cooldown"}`, true},
+		{`{"type":"result","id":"1","ok":false,"error":"exception"}`, false},
+	} {
+		ch := make(chan result, 1)
+		s.pending[1] = ch
+		var msg message
+		if err := json.Unmarshal([]byte(tt.msg), &msg); err != nil {
+			t.Fatal(err)
+		}
+		s.handle(msg)
+		_, ok := (<-ch).err.(*RejectedError)
+		if ok != tt.rejected {
+			t.Fatalf("message %s classified as rejected=%v", tt.msg, ok)
+		}
+	}
+}

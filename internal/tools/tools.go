@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -50,7 +51,8 @@ func (c *guardedCalls) Do(ctx context.Context, sub int, op string, args map[stri
 		return nil, err
 	}
 	data, err := c.call(ctx, id, sub, op, args)
-	if err != nil && c.onFailure != nil {
+	var rejected *game.RejectedError
+	if err != nil && c.onFailure != nil && !errors.As(err, &rejected) {
 		switch op {
 		case "terrain", "map_view", "build_options", "structures":
 		default:

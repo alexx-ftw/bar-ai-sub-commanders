@@ -129,16 +129,17 @@ func (s *State) Sub(id int) (Sub, bool) {
 }
 
 type message struct {
-	Type  string          `json:"type"`
-	ID    messageID       `json:"id,omitzero"`
-	Sub   int             `json:"sub,omitzero"`
-	Op    string          `json:"op,omitempty"`
-	Args  map[string]any  `json:"args,omitempty"`
-	OK    bool            `json:"ok,omitzero"`
-	Error string          `json:"error,omitempty"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Game  *Info           `json:"game,omitempty"`
-	State *State          `json:"state,omitempty"`
+	Type     string          `json:"type"`
+	ID       messageID       `json:"id,omitzero"`
+	Sub      int             `json:"sub,omitzero"`
+	Op       string          `json:"op,omitempty"`
+	Args     map[string]any  `json:"args,omitempty"`
+	OK       bool            `json:"ok,omitzero"`
+	Rejected bool            `json:"rejected,omitempty"`
+	Error    string          `json:"error,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Game     *Info           `json:"game,omitempty"`
+	State    *State          `json:"state,omitempty"`
 }
 
 // Positive bridge action IDs are strings so Lua's JSON encoder cannot round them.
@@ -172,6 +173,11 @@ type result struct {
 	data json.RawMessage
 	err  error
 }
+
+// RejectedError is an explicit game rejection, not an ambiguous transport failure.
+type RejectedError struct{ Message string }
+
+func (e *RejectedError) Error() string { return e.Message }
 
 // ErrOffline is returned when no game is connected.
 var ErrOffline = errors.New("game is not connected")
@@ -324,6 +330,8 @@ func (s *Server) handleFrom(conn Conn, msg message) {
 			delete(s.pending, int64(msg.ID))
 			if msg.OK {
 				ch <- result{data: msg.Data}
+			} else if msg.Rejected {
+				ch <- result{err: &RejectedError{Message: msg.Error}}
 			} else {
 				ch <- result{err: errors.New(msg.Error)}
 			}

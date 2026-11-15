@@ -138,3 +138,17 @@ func TestFailedReadOnlyToolDoesNotStopReview(t *testing.T) {
 		}
 	}
 }
+
+func TestGameRejectionDoesNotStopReview(t *testing.T) {
+	var stopped bool
+	c := &guardedCalls{
+		guard: func(context.Context, int) (uint64, error) { return 1, nil },
+		call: func(context.Context, uint64, int, string, map[string]any) (json.RawMessage, error) {
+			return nil, &game.RejectedError{Message: "cooldown"}
+		},
+		onFailure: func(context.Context, int, error) { stopped = true },
+	}
+	if _, err := c.Do(context.Background(), 1, "tune_rules", nil); err == nil || stopped {
+		t.Fatalf("rejection err=%v stopped=%v", err, stopped)
+	}
+}
