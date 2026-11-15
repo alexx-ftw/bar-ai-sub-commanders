@@ -9599,7 +9599,6 @@ local function drawPanel()
 	panel.scroll = min(panel.scroll, panel.scrollMax)
 	panel.bottom = max(clipBottom, min(top - headerH, contentBottom))
 	panel.flushTexts()
-	gl.Scissor(false)
 end
 
 local function drawPanelBackground(x1, x2, top, bottom)
@@ -9801,7 +9800,11 @@ function widget:DrawScreen()
 	if panel.bottom then
 		drawPanelBackground(x1, x2, top, panel.bottom)
 	end
-	drawPanel()
+	local ok, err = pcall(drawPanel)
+	gl.Scissor(false)
+	if not ok then
+		error(err)
+	end
 	drawZoneLabels(s)
 	panel.flushTexts()
 	glColor(1, 1, 1, 1)
@@ -9855,7 +9858,7 @@ function widget:GetTooltip(x, y)
 				return "Pause or resume this sub-commander's automatic decisions."
 			elseif label == "+ Zone" or label == "Drawing…" then
 				return "Draw an area for this sub-commander, or stop drawing."
-			elseif label:find("zones", 1, true) then
+			elseif label:lower():find("zones", 1, true) then
 				return "Use zones chosen automatically for this role."
 			elseif label:find("Focus:", 1, true) then
 				return "Use the selected unit types as this sub-commander's production focus."
@@ -9913,9 +9916,13 @@ function widget:MousePress(x, y, button)
 end
 
 function widget:MouseWheel(up, value)
+	if Spring.IsGUIHidden and Spring.IsGUIHidden() then
+		return false
+	end
 	local x, y = Spring.GetMouseState()
 	if not panel.collapsed and overPanel(x, y) and panel.scrollMax > 0 then
-		panel.scroll = max(0, min(panel.scrollMax, panel.scroll + (up and -1 or 1) * (value or 1) * 48 * uiScale()))
+		local _, _, _, s = panelGeometry()
+		panel.scroll = max(0, min(panel.scrollMax, panel.scroll + (up and -1 or 1) * abs(value or 1) * 48 * s))
 		return true
 	end
 	return false

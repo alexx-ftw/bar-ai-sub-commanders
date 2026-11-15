@@ -193,7 +193,7 @@ The game widget connects to `127.0.0.1:7878`. Run the bridge there, with Docker 
    ```
 
 4. **In game**: the panel header shows **AI online**. Select a sub-commander, click **AI: off** to switch
-   it on, and **Orders…** to give it standing orders in plain words, e.g. *"hold the north ridge,
+   it on, and **Give orders…** (or **Edit orders…**) to give it standing orders in plain words, e.g. *"hold the north ridge,
    prioritise anti-air"* (Enter saves, Esc cancels), or type them in chat (below). Purple lines in its log
    are the strategist's decisions.
 

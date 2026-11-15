@@ -37,7 +37,7 @@ local function panelFixture(width, height, count)
 			activeClip = args[1] ~= false and args or nil
 		end },
 		glColor = function() end, glRect = function() end, drawZoneLabels = function() end,
-		max = math.max, min = math.min, floor = math.floor, sformat = string.format,
+		max = math.max, min = math.min, abs = math.abs, floor = math.floor, sformat = string.format,
 	}, { __index = _G })
 	assert(load(code, "panel fixture", "t", env))()
 	return env, drawn, clips, function(x, y) mouseX, mouseY = x, y end
@@ -50,8 +50,12 @@ return {
 		T.ok(env.panel.scrollMax > 0, "content must scroll")
 		T.ok(env.panel.bottom >= 0, "panel must fit vertically")
 		T.eq(clips[1][2] >= 0, true, "clip must fit vertically")
+		T.near(clips[1][2] + clips[1][4], env.panel.header.y1, 0.01, "clip ends under the header")
+		for _, item in ipairs(drawn) do
+			if item.text == "Economy 12" then T.eq(item.visible, false, "off-screen content must be clipped") end
+		end
 		mouse(env.panel.x + 20, env.panel.y - 35)
-		T.ok(env.widget:MouseWheel(false, 100))
+		T.ok(env.widget:MouseWheel(false, -100))
 		env.widget:DrawScreen()
 		T.eq(env.panel.scroll, env.panel.scrollMax)
 		local found = false
@@ -74,8 +78,35 @@ return {
 			if item.text:find("Strategist:", 1, true) then status = item.text end
 		end
 		T.ok(ai and orders and status, "AI status and order controls should be visible")
+		T.eq(status, "Strategist: waiting for the strategist")
 		T.ok(env.widget:GetTooltip((ai.x1 + ai.x2) / 2, (ai.y1 + ai.y2) / 2):find("strategist", 1, true))
 		T.ok(env.widget:GetTooltip((orders.x1 + orders.x2) / 2, (orders.y1 + orders.y2) / 2):find("instructions", 1, true))
+	end,
+	scroll_does_not_consume_input_while_gui_is_hidden = function()
+		local env, _, _, mouse = panelFixture(1920, 720, 12)
+		env.widget:DrawScreen()
+		mouse(env.panel.x + 20, env.panel.y - 35)
+		env.Spring.IsGUIHidden = function() return true end
+		T.eq(env.widget:MouseWheel(false, -1), false)
+		T.eq(env.panel.scroll, 0)
+	end,
+	clipping_is_restored_when_drawing_fails = function()
+		local env, _, clips = panelFixture(1920, 720, 2)
+		local old = env.font.Print
+		env.font.Print = function(self, text, ...)
+			if text:find("Activity:", 1, true) then error("fake drawing error") end
+			return old(self, text, ...)
+		end
+		local ok = pcall(function() env.widget:DrawScreen() end)
+		T.eq(ok, false)
+		T.eq(clips[#clips][1], false, "scissor must be disabled after an error")
+	end,
+	scroll_uses_the_narrow_panel_scale = function()
+		local env, _, _, mouse = panelFixture(200, 1080, 30)
+		env.widget:DrawScreen()
+		mouse(env.panel.x + 5, env.panel.y - 20)
+		T.ok(env.widget:MouseWheel(false, -1))
+		T.near(env.panel.scroll, 48 * 200 / 390, 0.01)
 	end,
 	panel_width_fits_a_narrow_screen = function()
 		local env = panelFixture(200, 720, 1)
