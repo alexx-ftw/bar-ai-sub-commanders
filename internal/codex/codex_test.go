@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,17 @@ import (
 
 	"github.com/rusenask/bar-ai-sub-commanders/internal/opencode"
 )
+
+func TestUncertainFailureAfterToolCall(t *testing.T) {
+	base := errors.New("interrupted")
+	var marker interface{ Uncertain() bool }
+	if err := withUncertainty([]byte(`{"type":"item.started","item":{"type":"mcp_tool_call"}}`), base); !errors.As(err, &marker) || !marker.Uncertain() {
+		t.Fatalf("tool call failure must be uncertain: %v", err)
+	}
+	if err := withUncertainty([]byte(`{"type":"turn.started"}`), base); err != base {
+		t.Fatalf("failure before a tool call: %v", err)
+	}
+}
 
 func TestParseReply(t *testing.T) {
 	data := []byte(`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"set_posture","status":"completed"}}

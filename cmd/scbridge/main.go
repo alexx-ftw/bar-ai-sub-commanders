@@ -76,22 +76,28 @@ func run() error {
 			return errors.New("codex backend requires -max-reviews=1 to isolate each sub-commander")
 		}
 		addr, _, err := net.SplitHostPort(*mcpAddr)
-		if err != nil || (addr != "localhost" && (net.ParseIP(addr) == nil || !net.ParseIP(addr).IsLoopback())) {
+		if err != nil || net.ParseIP(addr) == nil || !net.ParseIP(addr).IsLoopback() {
 			return errors.New("codex backend requires a loopback MCP address")
 		}
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	m, err := opencode.ParseModel(*model)
-	if err != nil {
-		return err
+	var m opencode.Model
+	if *backend != "codex" {
+		var err error
+		m, err = opencode.ParseModel(*model)
+		if err != nil {
+			return err
+		}
 	}
 	absDir, err := filepath.Abs(*dir)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(absDir, "opencode.json")); err != nil {
-		return fmt.Errorf("strategist dir %s: %w (run from the repo root or pass -strategist-dir)", absDir, err)
+	if *backend != "codex" {
+		if _, err := os.Stat(filepath.Join(absDir, "opencode.json")); err != nil {
+			return fmt.Errorf("strategist dir %s: %w (run from the repo root or pass -strategist-dir)", absDir, err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -138,7 +144,7 @@ func run() error {
 				if info == nil {
 					return
 				}
-				if strat != nil {
+				if strat != nil && *backend != "codex" {
 					go strat.Debrief(ctx, info, summary)
 				}
 				st, err := learn.Find(*learnDir, learn.Matchup(info.Faction, info.Enemies), params)

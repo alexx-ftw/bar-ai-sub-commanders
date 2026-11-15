@@ -53,8 +53,9 @@ type subState struct {
 	lastDirective string
 	lastThreats   int
 	busy          bool
-	failures      int // reviews failed in a row
-	retryFrame    int // no review before this frame (backoff after failures)
+	failures      int  // reviews failed in a row
+	retryFrame    int  // no review before this frame (backoff after failures)
+	uncertain     bool // a failed turn may have changed the game; wait for the player to re-enable AI
 }
 
 // Strategist runs reviews for AI-enabled sub-commanders.
@@ -72,6 +73,7 @@ type Strategist struct {
 	actingIn  map[int]string // sub id -> game the turn started in
 	pace      pacer          // review pacing: provider speed, game speed, reviews in flight
 	notes     []string       // this game's decisions, for the debrief (debrief.go)
+	nextSub   int            // rotate the first candidate so a full review slot cannot starve later subs
 }
 
 type Client interface {
@@ -134,17 +136,9 @@ func (s *Strategist) Run(ctx context.Context) {
 		}
 		s.trackGame(info, state)
 		s.pace.observe(state.Frame, time.Now())
-		ai, started := 0, 0
-		for _, sub := range state.Subs {
-			if !sub.AI {
-				continue
-			}
-			ai++
-			if reason := s.due(sub, state.Frame); reason != "" {
-				started++
-				wg.Go(func() { s.review(ctx, info, state, sub, reason) })
-			}
-		}
+		ai, started := s.schedule(state, func(sub game.Sub, reason string) {
+			wg.Go(func() { s.review(ctx, info, state, sub, reason) })
+		})
 		switch {
 		case ai == 0:
 			idle("no sub-commander has AI on")
@@ -154,6 +148,31 @@ func (s *Strategist) Run(ctx context.Context) {
 			idle(s.waitingWhy(state.Frame))
 		}
 	}
+}
+
+func (s *Strategist) schedule(state *game.State, launch func(game.Sub, string)) (ai, started int) {
+	n := len(state.Subs)
+	start := s.nextSub
+	for i := 0; i < n; i++ {
+		idx := (start + i) % n
+		sub := state.Subs[idx]
+		if !sub.AI {
+			s.mu.Lock()
+			if ss := s.subs[sub.ID]; ss != nil {
+				ss.uncertain = false
+				ss.retryFrame = 0
+			}
+			s.mu.Unlock()
+			continue
+		}
+		ai++
+		if reason := s.due(sub, state.Frame); reason != "" {
+			started++
+			s.nextSub = (idx + 1) % n
+			launch(sub, reason)
+		}
+	}
+	return ai, started
 }
 
 // waitingWhy: what every AI sub-commander is waiting on (a review in flight, a retry after failures,
@@ -218,7 +237,7 @@ func (s *Strategist) due(sub game.Sub, frame int) string {
 		ss = &subState{}
 		s.subs[sub.ID] = ss
 	}
-	if ss.busy || frame < ss.retryFrame {
+	if ss.busy || ss.uncertain || frame < ss.retryFrame {
 		return ""
 	}
 	var why []string
@@ -294,14 +313,14 @@ func (s *Strategist) review(ctx context.Context, info *game.Info, state *game.St
 	}
 
 	stateless, _ := s.oc.(interface{ Stateless() bool })
-	prompt := report(info, state, sub, ss, reason, first || (stateless != nil && stateless.Stateless()), s.lessonsFor(info, state.Frame))
+	prompt := report(info, state, sub, ss, reason, first, stateless != nil && stateless.Stateless(), s.lessonsFor(info, state.Frame))
 	ctx, cancel := context.WithTimeoutCause(ctx, s.cfg.TurnTimeout, errors.New("strategist turn took too long"))
 	defer cancel()
 	start := time.Now()
 	reply, err := s.oc.Send(ctx, ss.sessionID, opencode.Prompt{Agent: s.cfg.Agent, Model: s.cfg.Model, Variant: s.cfg.Variant, Text: prompt})
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil && ctx.Err() != nil {
-			err = cause
+			err = fmt.Errorf("%s: %w", cause, err)
 			_ = s.oc.Abort(context.WithoutCancel(ctx), ss.sessionID)
 		}
 		s.fail(sub, ss, state.Frame, err)
@@ -372,11 +391,19 @@ func (s *Strategist) fail(sub game.Sub, ss *subState, frame int, err error) {
 	s.mu.Lock()
 	ss.failures++
 	ss.retryFrame = frame + seconds(min(5*time.Second<<min(ss.failures-1, 5), 2*time.Minute))
+	var uncertain interface{ Uncertain() bool }
+	if errors.As(err, &uncertain) && uncertain.Uncertain() {
+		ss.uncertain = true
+	}
+	needsReset := ss.uncertain
 	s.mu.Unlock()
 	s.log.Warn("review failed", "sub", sub.Name, "failures", ss.failures, "err", err)
 	msg := err.Error()
 	if len(msg) > 120 {
 		msg = msg[:120] + "…"
+	}
+	if needsReset {
+		msg = "turn may have changed the game; toggle AI off and on to retry"
 	}
 	s.game.Tell(sub.ID, "status", map[string]any{"text": "strategist error: " + msg})
 }
@@ -415,14 +442,18 @@ type brief struct {
 
 // report builds the user message for one review. The fixed briefing comes
 // first and only once per session, so every later turn extends a stable prefix.
-func report(info *game.Info, state *game.State, sub game.Sub, ss *subState, reason string, first bool, lessons string) string {
+func report(info *game.Info, state *game.State, sub game.Sub, ss *subState, reason string, first, stateless bool, lessons string) string {
 	var b strings.Builder
-	if first {
+	if first || stateless {
 		fmt.Fprintf(&b, "You command sub-commander #%d %q for player %s (faction %s) on map %q, %.0f x %.0f elmos (x grows east, z grows south).\n",
 			sub.ID, sub.Name, info.Player, info.Faction, info.Map, info.MapX, info.MapZ)
 		fmt.Fprintf(&b, "Wind %.0f-%.0f (average about %.0f; wind turbines pay off above ~7), tidal %.0f.\n", info.WindMin, info.WindMax, (info.WindMin+info.WindMax)/2, info.Tidal)
 		fmt.Fprintf(&b, "Always pass sub_id=%d to tools. You will get a report like this whenever something happens or every so often.\n", sub.ID)
-		fmt.Fprintf(&b, "This is your first report: load the %q skill (and any other skill you need), then look at the map once with get_map_view before deciding.\n", sub.Role)
+		if first {
+			fmt.Fprintf(&b, "This is your first report: load the %q skill (and any other skill you need), then look at the map once with get_map_view before deciding.\n", sub.Role)
+		} else {
+			fmt.Fprintf(&b, "Read the %q playbook and inspect the map if needed before deciding.\n", sub.Role)
+		}
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "## Report at %s (why now: %s)\n", clock(state.Frame), reason)

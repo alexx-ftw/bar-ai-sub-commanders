@@ -23,6 +23,30 @@ type Client struct {
 	next         atomic.Uint64
 }
 
+type uncertainError struct{ err error }
+
+func (e uncertainError) Error() string   { return e.err.Error() }
+func (e uncertainError) Unwrap() error   { return e.err }
+func (e uncertainError) Uncertain() bool { return true }
+
+func withUncertainty(data []byte, err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var event struct {
+			Type string `json:"type"`
+			Item struct {
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(line, &event) == nil && event.Type == "item.started" && event.Item.Type == "mcp_tool_call" {
+			return uncertainError{err}
+		}
+	}
+	return err
+}
+
 func (*Client) Stateless() bool { return true }
 func (c *Client) CreateSession(context.Context, string) (string, error) {
 	return strconv.FormatUint(c.next.Add(1), 10), nil
@@ -44,9 +68,10 @@ func (c *Client) Send(ctx context.Context, _ string, p opencode.Prompt) (*openco
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("codex: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, withUncertainty(stdout.Bytes(), fmt.Errorf("codex: %w: %s", err, strings.TrimSpace(stderr.String())))
 	}
-	return parseReply(stdout.Bytes())
+	reply, err := parseReply(stdout.Bytes())
+	return reply, withUncertainty(stdout.Bytes(), err)
 }
 
 func parseReply(data []byte) (*opencode.Reply, error) {
