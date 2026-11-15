@@ -61,7 +61,7 @@ type subState struct {
 type Strategist struct {
 	cfg  Config
 	game *game.Server
-	oc   *opencode.Client
+	oc   Client
 	log  *slog.Logger
 
 	mu        sync.Mutex
@@ -74,8 +74,14 @@ type Strategist struct {
 	notes     []string       // this game's decisions, for the debrief (debrief.go)
 }
 
+type Client interface {
+	CreateSession(context.Context, string) (string, error)
+	Send(context.Context, string, opencode.Prompt) (*opencode.Reply, error)
+	Abort(context.Context, string) error
+}
+
 // New creates a strategist.
-func New(cfg Config, g *game.Server, oc *opencode.Client, log *slog.Logger) *Strategist {
+func New(cfg Config, g *game.Server, oc Client, log *slog.Logger) *Strategist {
 	return &Strategist{cfg: cfg, game: g, oc: oc, log: log, subs: map[int]*subState{}, acting: map[int]int{}, actingIn: map[int]string{}}
 }
 
@@ -287,7 +293,8 @@ func (s *Strategist) review(ctx context.Context, info *game.Info, state *game.St
 		s.log.Info("strategist session", "sub", sub.Name, "session", id)
 	}
 
-	prompt := report(info, state, sub, ss, reason, first, s.lessonsFor(info, state.Frame))
+	stateless, _ := s.oc.(interface{ Stateless() bool })
+	prompt := report(info, state, sub, ss, reason, first || (stateless != nil && stateless.Stateless()), s.lessonsFor(info, state.Frame))
 	ctx, cancel := context.WithTimeoutCause(ctx, s.cfg.TurnTimeout, errors.New("strategist turn took too long"))
 	defer cancel()
 	start := time.Now()

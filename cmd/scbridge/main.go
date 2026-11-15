@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rusenask/bar-ai-sub-commanders/internal/codex"
 	"github.com/rusenask/bar-ai-sub-commanders/internal/decider"
 	"github.com/rusenask/bar-ai-sub-commanders/internal/game"
 	"github.com/rusenask/bar-ai-sub-commanders/internal/learn"
@@ -45,6 +46,8 @@ func run() error {
 		mcpAddr     = flag.String("mcp-addr", "127.0.0.1:7879", "address of the MCP tool server (must match strategist/opencode.json)")
 		opencodeURL = flag.String("opencode-url", "", "use an already running `opencode serve` instead of starting one")
 		opencodeBin = flag.String("opencode-bin", "opencode", "opencode binary")
+		backend     = flag.String("backend", "opencode", "strategist backend: opencode or codex")
+		codexModel  = flag.String("codex-model", "gpt-6-luna", "Codex model used for game reviews")
 		port        = flag.Int("opencode-port", 4517, "port for the opencode server scbridge starts")
 		dir         = flag.String("strategist-dir", "strategist", "opencode project directory with the subcommander agent")
 		model       = flag.String("model", cmp.Or(os.Getenv("SCBRIDGE_MODEL"), "node06/glm-5.3-flash"), "provider/model as configured in opencode")
@@ -63,6 +66,20 @@ func run() error {
 		deciderRts  = flag.String("decider-routes", os.Getenv("SCBRIDGE_DECIDER_ROUTES"), "per-task decision models (design/decision-models.md), e.g. fight=http://host:8011,unit=http://host:8012,turret=http://host:8013")
 	)
 	flag.Parse()
+	if *backend == "codex" {
+		explicitMax := false
+		flag.Visit(func(f *flag.Flag) { explicitMax = explicitMax || f.Name == "max-reviews" })
+		if !explicitMax {
+			*maxReviews = 1
+		}
+		if *maxReviews != 1 {
+			return errors.New("codex backend requires -max-reviews=1 to isolate each sub-commander")
+		}
+		addr, _, err := net.SplitHostPort(*mcpAddr)
+		if err != nil || (addr != "localhost" && (net.ParseIP(addr) == nil || !net.ParseIP(addr).IsLoopback())) {
+			return errors.New("codex backend requires a loopback MCP address")
+		}
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	m, err := opencode.ParseModel(*model)
@@ -173,19 +190,31 @@ func run() error {
 		}()
 	}
 
-	var oc *opencode.Client
-	if *opencodeURL != "" {
-		oc = &opencode.Client{BaseURL: *opencodeURL, HTTP: &http.Client{Timeout: 5 * time.Minute}}
-		if !oc.Healthy(ctx) {
+	var oc strategist.Client
+	if *backend == "codex" {
+		instructions, err := os.ReadFile(filepath.Join(absDir, "prompts", "subcommander.md"))
+		if err != nil {
+			return fmt.Errorf("strategist instructions: %w", err)
+		}
+		oc = &codex.Client{Binary: "codex", Dir: absDir, URL: "http://" + *mcpAddr + "/mcp", Model: *codexModel,
+			Instructions: string(instructions) + "\nUse the bar MCP tools. Read the relevant playbooks in .agents/skills/ instead of using the skill tool. Each review is independent; do not assume earlier conversation history."}
+	} else if *backend != "opencode" {
+		return fmt.Errorf("unknown strategist backend %q", *backend)
+	} else if *opencodeURL != "" {
+		client := &opencode.Client{BaseURL: *opencodeURL, HTTP: &http.Client{Timeout: 5 * time.Minute}}
+		if !client.Healthy(ctx) {
 			return fmt.Errorf("opencode at %s is not reachable", *opencodeURL)
 		}
+		oc = client
 	} else {
 		oc, err = opencode.Serve(ctx, *opencodeBin, absDir, *host, *port, log)
 		if err != nil {
 			return err
 		}
 	}
-	log.Info("watch the strategist with: opencode attach " + oc.BaseURL)
+	if c, ok := oc.(*opencode.Client); ok {
+		log.Info("watch the strategist with: opencode attach " + c.BaseURL)
+	}
 
 	strat = strategist.New(strategist.Config{
 		Agent:       *agent,
@@ -199,7 +228,11 @@ func run() error {
 		Record:      *record,
 		LessonsDir:  lessonsDir,
 	}, g, oc, log)
-	log.Info("strategist ready", "model", *model, "interval", *interval)
+	selectedModel := *model
+	if *backend == "codex" {
+		selectedModel = *codexModel
+	}
+	log.Info("strategist ready", "backend", *backend, "model", selectedModel, "interval", *interval)
 
 	go strat.Run(ctx)
 	select {
