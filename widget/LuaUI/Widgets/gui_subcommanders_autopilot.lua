@@ -25,6 +25,8 @@ local myTeam = Spring.GetMyTeamID()
 local useAI = (VFS.LoadFile("LuaUI/Config/autopilot.txt", VFS.RAW) or VFS.LoadFile("autopilot.txt", VFS.RAW) or ""):find("ai") ~= nil
 local ids = {}
 local st = { stage = nil }
+local savedGame
+local pendingAI
 local labDef, conDefs -- the faction's bot lab and the constructors it makes
 
 local function say(text)
@@ -43,9 +45,9 @@ local function ownedBy(subID, defSet)
 	return list
 end
 
-local function newSub(role, units, zone, directive)
+local function newSub(role, units, zone)
 	local id = SC.create(role)
-	say(string.format("%s created with %d units: %s", role, units and #units or 0, directive))
+	say(string.format("%s created with %d units", role, units and #units or 0))
 	if units and #units > 0 then
 		SC.assign(id, units)
 	end
@@ -56,7 +58,6 @@ local function newSub(role, units, zone, directive)
 		SC.setAutonomy(id, "full")
 	end
 	SC.setAI(id, useAI)
-	SC.setDirective(id, directive)
 	return id
 end
 
@@ -89,13 +90,47 @@ local function start(frame)
 		return
 	end
 	learnFaction(com)
+	if savedGame and savedGame.map == Game.mapName and savedGame.team == myTeam and type(savedGame.frame) == "number"
+		and type(savedGame.state) == "table" and (savedGame.state.stage == "opener" or type(savedGame.state.stage) == "number")
+		and frame > 0 and frame >= savedGame.frame
+		and (not (os and os.time and savedGame.time) or os.time() - savedGame.time <= 1800) then
+		ids = {}
+		for key, role in pairs({ eco = "economy", def = "defense", army = "army", intel = "intelligence", air = "air" }) do
+			local id = type(savedGame.ids) == "table" and savedGame.ids[key]
+			local sub = id and SC.get(id)
+			if sub and sub.role == role then
+				ids[key] = id
+			end
+		end
+		st = savedGame.state
+		useAI = savedGame.useAI and true or false
+		if pendingAI == nil then
+			pendingAI = savedGame.pendingAI
+		end
+		if pendingAI ~= nil then
+			useAI = pendingAI
+			for _, id in pairs(ids) do
+				SC.setAI(id, useAI)
+			end
+		end
+		if not ids.eco then
+			local units = not SC.ownerOf(com) and { com } or {}
+			ids.eco = newSub("economy", units, nil)
+		end
+		pendingAI = nil
+		savedGame = nil
+		say("restored the existing sub-commanders")
+		return
+	end
+	savedGame = nil
+	pendingAI = nil
 	if not labDef then
 		say("no lab in the commander's build options: not starting")
 		st.stage = "off"
 		return
 	end
 	if frame < 30 * 60 and #SC.list() == 0 then
-		ids.eco = newSub("economy", { com }, nil, "grow the economy: take every safe metal spot, keep energy ahead of spending")
+		ids.eco = newSub("economy", { com }, nil)
 		st.stage = "opener"
 		say("playing the team: " .. (useAI and "AI strategist on" or "rules only"))
 		return
@@ -118,13 +153,13 @@ local function start(frame)
 	for i = 2, #cons do
 		ecoUnits[#ecoUnits + 1] = cons[i]
 	end
-	ids.eco = newSub("economy", ecoUnits, nil, "grow the economy: take every safe metal spot, keep energy ahead of spending")
-	ids.def = newSub("defense", { cons[1] }, nil, "hold the side of the base facing the enemy")
+	ids.eco = newSub("economy", ecoUnits, nil)
+	ids.def = newSub("defense", { cons[1] }, nil)
 	local armyUnits = combat
 	for i = 2, #factories do
 		armyUnits[#armyUnits + 1] = factories[i]
 	end
-	ids.army = newSub("army", armyUnits, nil, "control our half of the map; attack when we are clearly stronger")
+	ids.army = newSub("army", armyUnits, nil)
 	st.stage = 3
 	st.startFrame = frame - 30 * 60 * 4
 	say("took over the team: " .. (useAI and "AI strategist on" or "rules only"))
@@ -148,20 +183,22 @@ local function step(n)
 	if st.stage == "opener" then
 		-- the economy (full autonomy) builds the first lab itself; Defense and Army once constructors are out
 		if #cons >= 3 or (t > 30 * 150 and #cons >= 1) then
-			ids.def = newSub("defense", { cons[1] }, nil, "hold the side of the base facing the enemy")
-			ids.army = newSub("army", {}, nil, "control our half of the map; attack when we are clearly stronger")
+			ids.def = newSub("defense", { cons[1] }, nil)
+			ids.army = newSub("army", {}, nil)
 			st.stage = 3
 		end
 	elseif st.stage == 3 and t >= 30 * 60 * 4 and #cons >= 3 then
 		-- recon early (radar net, scouts): raids that arrive unseen cost the most
-		ids.intel = newSub("intelligence", { cons[1] }, nil, "watch the approaches to our base and take out enemy radar")
+		ids.intel = newSub("intelligence", { cons[1] }, nil)
 		st.stage = 4
 	elseif st.stage == 4 and t >= 30 * 60 * 5 and #cons >= 3 then
-		SC.assign(ids.def, { cons[1] })
+		if ids.def then
+			SC.assign(ids.def, { cons[1] })
+		end
 		st.stage = 5
 	elseif st.stage == 5 and t >= 30 * 60 * 7 and #cons >= 3 then
 		-- the Air Force: air defence and air attack in one
-		ids.air = newSub("air", { cons[1] }, nil, "keep the base and the economy safe from air, own the sky, hunt their raids, and bomb their economy where their anti-air is weak")
+		ids.air = newSub("air", { cons[1] }, nil)
 		st.stage = 6
 	elseif st.stage == 6 and t >= 30 * 60 * 10 and #cons >= 3 and ids.air then
 		SC.assign(ids.air, { cons[1] })
@@ -192,15 +229,38 @@ end
 
 function widget:TextCommand(cmd)
 	local arg = cmd:match("^autopilot%s+(%a+)")
+	SC = SC or WG.SubCommanders
 	if not arg or not SC then
 		return false
 	end
 	useAI = arg == "ai"
+	if not st.stage then
+		pendingAI = useAI
+	end
 	for _, id in pairs(ids) do
 		SC.setAI(id, useAI)
 	end
 	say(useAI and "AI strategist on" or "rules only")
 	return true
+end
+
+function widget:GetConfigData()
+	if not st.stage and savedGame then
+		if pendingAI ~= nil then
+			savedGame.pendingAI = pendingAI
+		end
+		return { game = savedGame }
+	end
+	local frame = Spring.GetGameFrame()
+	if frame > 0 and st.stage and st.stage ~= "off" then
+		return { game = { map = Game.mapName, team = myTeam, frame = frame, time = os and os.time and os.time() or nil,
+			ids = ids, state = st, useAI = useAI } }
+	end
+	return {}
+end
+
+function widget:SetConfigData(data)
+	savedGame = data and data.game
 end
 
 function widget:Initialize()
