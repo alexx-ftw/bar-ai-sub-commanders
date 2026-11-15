@@ -48,7 +48,8 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	c := Client{Binary: binary, Dir: dir, URL: "http://127.0.0.1:27879/mcp", Model: "gpt-6-luna", Instructions: "instruction"}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c := Client{Dir: dir, URL: "http://127.0.0.1:27879/mcp", Model: "gpt-6-luna", Instructions: "instruction"}
 	reply, err := c.Send(context.Background(), "1", opencode.Prompt{Variant: "medium", Text: "report"})
 	if err != nil || reply.Text != "ok" {
 		t.Fatalf("reply = %+v, error = %v", reply, err)

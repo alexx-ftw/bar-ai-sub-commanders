@@ -15,7 +15,6 @@ import (
 )
 
 type Client struct {
-	Binary       string
 	Dir          string
 	URL          string
 	Model        string
@@ -62,7 +61,7 @@ func (c *Client) Send(ctx context.Context, _ string, p opencode.Prompt) (*openco
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(p.Variant))
 	}
 	args = append(args, "-")
-	cmd := exec.CommandContext(ctx, c.Binary, args...)
+	cmd := exec.CommandContext(ctx, "codex", args...)
 	cmd.Dir = c.Dir
 	cmd.Stdin = strings.NewReader(c.Instructions + "\n\n" + p.Text)
 	var stdout, stderr bytes.Buffer

@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,11 +129,25 @@ type fileConn struct {
 	pending      []byte
 	mu           sync.Mutex
 	closed       chan struct{}
+	ready        chan struct{}
+	readyOnce    sync.Once
 	once         sync.Once
 }
 
 func newFileConn(dir, session string) *fileConn {
-	c := &fileConn{dir: dir, session: session, closed: make(chan struct{})}
+	c := &fileConn{dir: dir, session: session, closed: make(chan struct{}), ready: make(chan struct{})}
+	entries, _ := os.ReadDir(dir)
+	found := false
+	for _, entry := range entries {
+		name, ok := strings.CutPrefix(entry.Name(), session+".w2b.")
+		if !ok || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSuffix(name, ".jsonl"))
+		if err == nil && n >= 0 && (!found || n < c.seg) {
+			c.seg, found = n, true
+		}
+	}
 	go c.pinger()
 	return c
 }
@@ -181,6 +197,12 @@ func (c *fileConn) Read(p []byte) (int, error) {
 			c.seg++
 			continue
 		}
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &msg) == nil && msg.Type == "hello" {
+			c.readyOnce.Do(func() { close(c.ready) })
+		}
 		c.pending = line
 	}
 }
@@ -202,6 +224,12 @@ func (c *fileConn) Write(p []byte) (int, error) {
 }
 
 func (c *fileConn) pinger() {
+	// A restarted bridge must wait for a fresh hello: pings would keep the old link alive forever.
+	select {
+	case <-c.ready:
+	case <-c.closed:
+		return
+	}
 	t := time.NewTicker(pingEvery)
 	defer t.Stop()
 	for {

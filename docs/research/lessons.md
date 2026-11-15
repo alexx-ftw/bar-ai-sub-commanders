@@ -274,6 +274,10 @@ out wrong.
 
 ## Process traps
 
+- **A restarted file bridge can wait forever on a deleted segment and replay old actions.** Start at the
+  oldest remaining segment, wait for a fresh hello before pinging, and skip old bridge messages when the
+  widget reconnects. Otherwise a live game can show a connected link with no strategist state.
+
 - **Read `make lint`'s exit status, not a grep of its output.** `make lint | grep passed` showed "87
   passed" while the main-chunk locals check failed (196 of BAR's 200) for three commits.
 

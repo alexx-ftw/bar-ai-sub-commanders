@@ -202,7 +202,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("strategist instructions: %w", err)
 		}
-		oc = &codex.Client{Binary: "codex", Dir: absDir, URL: "http://" + *mcpAddr + "/mcp", Model: *codexModel,
+		oc = &codex.Client{Dir: absDir, URL: "http://" + *mcpAddr + "/mcp", Model: *codexModel,
 			Instructions: string(instructions) + "\nUse the bar MCP tools. Read the relevant playbooks in .agents/skills/ instead of using the skill tool. Each review is independent; do not assume earlier conversation history."}
 	} else if *backend != "opencode" {
 		return fmt.Errorf("unknown strategist backend %q", *backend)

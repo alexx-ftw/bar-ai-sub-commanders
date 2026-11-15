@@ -188,3 +188,40 @@ func jsonNum(f float64) string {
 	b, _ := json.Marshal(f)
 	return string(b)
 }
+
+func TestFileReconnectStartsAtRemainingSegmentAndWaitsForHello(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.w2b.3.jsonl")
+	if err := os.WriteFile(path, []byte("{\"type\":\"state\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := newFileConn(dir, "s1")
+	defer c.Close()
+	sc := bufio.NewScanner(c)
+	if !sc.Scan() || sc.Text() != `{"type":"state"}` {
+		t.Fatalf("remaining segment: %q", sc.Text())
+	}
+	select {
+	case <-c.ready:
+		t.Fatal("bridge must not ping before receiving a hello")
+	default:
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"type\":\"hello\"}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !sc.Scan() || sc.Text() != `{"type":"hello"}` {
+		t.Fatalf("hello: %q", sc.Text())
+	}
+	select {
+	case <-c.ready:
+	default:
+		t.Fatal("hello did not start pings")
+	}
+}
