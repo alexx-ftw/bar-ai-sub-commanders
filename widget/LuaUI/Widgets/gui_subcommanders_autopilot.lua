@@ -281,8 +281,15 @@ end
 
 function widget:GetConfigData()
 	if not st.stage and savedGame then
+		local currentID = gameID()
+		if pendingAI ~= nil and currentID and currentID ~= savedGame.gameID then
+			savedGame = { gameID = currentID, map = Game.mapName, team = myTeam, frame = Spring.GetGameFrame() }
+		end
 		if pendingAI ~= nil then
 			savedGame.pendingAI = pendingAI
+		end
+		if currentID and currentID == savedGame.gameID and os and os.time then
+			savedGame.time = os.time()
 		end
 		return { game = savedGame }
 	end

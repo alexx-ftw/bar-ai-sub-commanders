@@ -1,6 +1,6 @@
 -- Exercise the actual Autopilot widget with the same sub-commanders across a reload.
 local function fixture(existing, gameID, noCommander, team)
-	local frame = 10
+	local frame, now = 10, 1000
 	local subs = existing or {}
 	local created, changed = {}, {}
 	local defs = { [1] = { commander = true, builder = true }, [2] = { factory = true }, [3] = { builder = true } }
@@ -17,6 +17,7 @@ local function fixture(existing, gameID, noCommander, team)
 	}
 	local env = setmetatable({
 		widget = {}, WG = { SubCommanders = sc }, Game = { mapName = "test map", gameID = gameID or "game-one" },
+		os = { time = function() return now end },
 		Spring = { GetMyTeamID = function() return team or 1 end, GetGameFrame = function() return frame end,
 			GetTeamUnits = function() return noCommander and {} or { 100 } end, GetUnitDefID = function(id) return id == 101 and 3 or 1 end,
 			GetSpectatingState = function() return false end, GetUnitIsBeingBuilt = function() return false end,
@@ -25,10 +26,35 @@ local function fixture(existing, gameID, noCommander, team)
 		VFS = { LoadFile = function() return nil end, Include = function() return defs end },
 	}, { __index = _G })
 	assert(loadfile(os.getenv("AUTOPILOT_WIDGET") or "widget/LuaUI/Widgets/gui_subcommanders_autopilot.lua", "t", env))()
-	return env.widget, subs, created, changed, function(n) frame = n end, env
+	return env.widget, subs, created, changed, function(n) frame = n end, env, function(n) now = n end
 end
 
 return {
+	new_match_early_choice_survives_repeated_reload = function()
+		local first, _, _, _, firstFrame = fixture()
+		first:Initialize() first:GameFrame(10) firstFrame(120)
+		local oldSave = first:GetConfigData()
+		local second, subs, _, _, secondFrame = fixture(nil, "game-two")
+		secondFrame(0) second:SetConfigData(oldSave) second:Initialize() second:TextCommand("autopilot ai")
+		local pending = second:GetConfigData()
+		local third, _, _, _, thirdFrame = fixture(subs, "game-two")
+		thirdFrame(0) third:SetConfigData(pending) third:Initialize()
+		local pendingAgain = third:GetConfigData()
+		local fourth, _, _, _, fourthFrame = fixture(subs, "game-two")
+		fourthFrame(10) fourth:SetConfigData(pendingAgain) fourth:Initialize() fourth:GameFrame(10)
+		T.eq(subs[1].ai, true)
+	end,
+	paused_reloads_refresh_verified_saved_state = function()
+		local first, subs, _, _, frame = fixture()
+		first:Initialize() first:GameFrame(10) frame(120)
+		local saved = first:GetConfigData()
+		local second, _, _, _, nextFrame, _, secondTime = fixture(subs)
+		nextFrame(120) secondTime(2700) second:SetConfigData(saved) second:Initialize()
+		local refreshed = second:GetConfigData()
+		local third, _, created, _, thirdFrame, _, thirdTime = fixture(subs)
+		thirdFrame(121) thirdTime(4400) third:SetConfigData(refreshed) third:Initialize() third:GameFrame(121)
+		T.eq(#created, 0, "paused reload must not recreate existing sub-commanders")
+	end,
 	pre_start_choice_survives_a_reload = function()
 		local first, _, _, _, frame = fixture()
 		first:Initialize() frame(0) first:TextCommand("autopilot ai")
