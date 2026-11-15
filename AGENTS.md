@@ -14,6 +14,7 @@
 ## After every change
 
 For protocol changes, test a real widget round trip: Lua's JSON encoder can round large numeric IDs.
+Keep suggested in-game chat orders short and verify the saved directive: BAR can truncate long messages.
 
 1. Check it: `make lint` (luac + go vet), `go test ./...`, `make build`.
 2. Commit and push to `main` (`git push origin main`). Don't leave finished work uncommitted.
