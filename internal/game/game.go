@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -128,7 +129,7 @@ func (s *State) Sub(id int) (Sub, bool) {
 
 type message struct {
 	Type  string          `json:"type"`
-	ID    int64           `json:"id,omitzero"`
+	ID    messageID       `json:"id,omitzero"`
 	Sub   int             `json:"sub,omitzero"`
 	Op    string          `json:"op,omitempty"`
 	Args  map[string]any  `json:"args,omitempty"`
@@ -137,6 +138,33 @@ type message struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 	Game  *Info           `json:"game,omitempty"`
 	State *State          `json:"state,omitempty"`
+}
+
+// Positive bridge action IDs are strings so Lua's JSON encoder cannot round them.
+// Negative decision IDs remain numbers for older widgets.
+type messageID int64
+
+func (id messageID) MarshalJSON() ([]byte, error) {
+	if id > 0 {
+		return json.Marshal(strconv.FormatInt(int64(id), 10))
+	}
+	return []byte(strconv.FormatInt(int64(id), 10)), nil
+}
+
+func (id *messageID) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		data = []byte(value)
+	}
+	n, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return err
+	}
+	*id = messageID(n)
+	return nil
 }
 
 type result struct {
@@ -182,7 +210,7 @@ type Server struct {
 func NewServer(addr string, log *slog.Logger) *Server {
 	s := &Server{addr: addr, log: log, pending: map[int64]chan result{}}
 	// Old file-transport results must not match action IDs after a bridge restart.
-	s.nextID.Store(time.Now().UnixMilli() * 1000)
+	s.nextID.Store(time.Now().UnixNano())
 	return s
 }
 
@@ -291,8 +319,8 @@ func (s *Server) handleFrom(conn Conn, msg message) {
 			}()
 		}
 	case "result":
-		if ch, ok := s.pending[msg.ID]; ok {
-			delete(s.pending, msg.ID)
+		if ch, ok := s.pending[int64(msg.ID)]; ok {
+			delete(s.pending, int64(msg.ID))
 			if msg.OK {
 				ch <- result{data: msg.Data}
 			} else {
@@ -370,7 +398,7 @@ func (s *Server) Do(ctx context.Context, sub int, op string, args map[string]any
 		delete(s.pending, id)
 		s.mu.Unlock()
 	}()
-	if err := s.write(message{Type: "action", ID: id, Sub: sub, Op: op, Args: args}); err != nil {
+	if err := s.write(message{Type: "action", ID: messageID(id), Sub: sub, Op: op, Args: args}); err != nil {
 		return nil, err
 	}
 	// 30 s: over the file transport (Docker Desktop's mount, polled) a widget's answer arrived after the
@@ -405,7 +433,7 @@ func (s *Server) decide(msg message) {
 
 // Tell sends an action without waiting (status lines, notes).
 func (s *Server) Tell(sub int, op string, args map[string]any) {
-	if err := s.write(message{Type: "action", ID: s.nextID.Add(1), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
+	if err := s.write(message{Type: "action", ID: messageID(s.nextID.Add(1)), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
 		s.log.Warn("tell", "op", op, "err", err)
 	}
 }

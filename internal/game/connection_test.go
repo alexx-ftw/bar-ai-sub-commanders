@@ -1,11 +1,32 @@
 package game
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"testing"
 )
+
+func TestMessageIDsKeepPrecisionAndNumericDecisionCompatibility(t *testing.T) {
+	const actionID messageID = 1794767243948000001
+	data, err := json.Marshal(message{Type: "action", ID: actionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action message
+	if err := json.Unmarshal(data, &action); err != nil || action.ID != actionID {
+		t.Fatalf("action %s: %+v %v", data, action, err)
+	}
+	var decision message
+	if err := json.Unmarshal([]byte(`{"type":"decide","id":-5}`), &decision); err != nil || decision.ID != -5 {
+		t.Fatalf("decision %+v: %v", decision, err)
+	}
+	data, err = json.Marshal(message{Type: "decision", ID: decision.ID})
+	if err != nil || string(data) != `{"type":"decision","id":-5}` {
+		t.Fatalf("decision %s: %v", data, err)
+	}
+}
 
 func TestReplacementClearsStateAndRejectsOldMessages(t *testing.T) {
 	s := NewServer("", slog.New(slog.NewTextHandler(io.Discard, nil)))

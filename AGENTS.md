@@ -13,6 +13,8 @@
 
 ## After every change
 
+For protocol changes, test a real widget round trip: Lua's JSON encoder can round large numeric IDs.
+
 1. Check it: `make lint` (luac + go vet), `go test ./...`, `make build`.
 2. Commit and push to `main` (`git push origin main`). Don't leave finished work uncommitted.
 3. Bring the running setup up to date, depending on what changed:
