@@ -68,19 +68,22 @@ return {
 	end,
 	controls_explain_orders_and_ai_state = function()
 		local env, drawn = panelFixture(1920, 1080, 1)
+		env.subs[1].autoZones = true
 		env.widget:DrawScreen()
-		local ai, orders, status
+		local ai, orders, zones, status
 		for _, button in ipairs(env.buttons) do
 			if button.label == "AI: on" then ai = button end
 			if button.label == "Give orders…" then orders = button end
+			if button.label == "Zones: auto" then zones = button end
 		end
 		for _, item in ipairs(drawn) do
 			if item.text:find("Strategist:", 1, true) then status = item.text end
 		end
-		T.ok(ai and orders and status, "AI status and order controls should be visible")
+		T.ok(ai and orders and zones and status, "AI status and order controls should be visible")
 		T.eq(status, "Strategist: waiting for the strategist")
 		T.ok(env.widget:GetTooltip((ai.x1 + ai.x2) / 2, (ai.y1 + ai.y2) / 2):find("strategist", 1, true))
 		T.ok(env.widget:GetTooltip((orders.x1 + orders.x2) / 2, (orders.y1 + orders.y2) / 2):find("instructions", 1, true))
+		T.ok(env.widget:GetTooltip((zones.x1 + zones.x2) / 2, (zones.y1 + zones.y2) / 2):find("automatically", 1, true))
 	end,
 	scroll_does_not_consume_input_while_gui_is_hidden = function()
 		local env, _, _, mouse = panelFixture(1920, 720, 12)
