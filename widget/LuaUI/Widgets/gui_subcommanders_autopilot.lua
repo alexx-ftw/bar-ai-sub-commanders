@@ -78,6 +78,11 @@ local function learnFaction(com)
 	end
 end
 
+local function gameID()
+	local id = Game.gameID or (Spring.GetGameRulesParam and Spring.GetGameRulesParam("GameID"))
+	return id ~= "" and id or nil
+end
+
 local function start(frame)
 	local com
 	for _, u in ipairs(Spring.GetTeamUnits(myTeam)) do
@@ -86,11 +91,31 @@ local function start(frame)
 			com = u
 		end
 	end
-	if not com then
+	if com then
+		learnFaction(com)
+	else
+		conDefs = {}
+		for id, d in pairs(defs) do
+			if d.builder and not d.commander then
+				conDefs[id] = true
+			end
+		end
+	end
+	local currentID = gameID()
+	if savedGame and savedGame.gameID and not currentID then
 		return
 	end
-	learnFaction(com)
-	if savedGame and savedGame.map == Game.mapName and savedGame.team == myTeam and type(savedGame.frame) == "number"
+	if savedGame and not savedGame.gameID and frame > 0 then
+		say("cannot verify the saved game; not taking over existing sub-commanders")
+		st.stage = "off"
+		return
+	end
+	local sameGame = savedGame and currentID and savedGame.gameID == currentID and savedGame.map == Game.mapName and savedGame.team == myTeam
+	if sameGame and savedGame.pendingAI ~= nil and pendingAI == nil then
+		pendingAI = savedGame.pendingAI
+		useAI = pendingAI
+	end
+	if sameGame and type(savedGame.frame) == "number"
 		and type(savedGame.state) == "table" and (savedGame.state.stage == "opener" or type(savedGame.state.stage) == "number")
 		and frame > 0 and frame >= savedGame.frame
 		and (not (os and os.time and savedGame.time) or os.time() - savedGame.time <= 1800) then
@@ -114,8 +139,15 @@ local function start(frame)
 			end
 		end
 		if not ids.eco then
-			local units = not SC.ownerOf(com) and { com } or {}
+			local units = com and not SC.ownerOf(com) and { com } or {}
 			ids.eco = newSub("economy", units, nil)
+		end
+		if type(st.stage) == "number" then
+			for _, spec in ipairs({ { "def", "defense", 3 }, { "army", "army", 3 }, { "intel", "intelligence", 4 }, { "air", "air", 6 } }) do
+				if st.stage >= spec[3] and not ids[spec[1]] then
+					ids[spec[1]] = newSub(spec[2], {}, nil)
+				end
+			end
 		end
 		pendingAI = nil
 		savedGame = nil
@@ -124,6 +156,9 @@ local function start(frame)
 	end
 	savedGame = nil
 	pendingAI = nil
+	if not com then
+		return
+	end
 	if not labDef then
 		say("no lab in the commander's build options: not starting")
 		st.stage = "off"
@@ -252,9 +287,9 @@ function widget:GetConfigData()
 		return { game = savedGame }
 	end
 	local frame = Spring.GetGameFrame()
-	if frame > 0 and st.stage and st.stage ~= "off" then
-		return { game = { map = Game.mapName, team = myTeam, frame = frame, time = os and os.time and os.time() or nil,
-			ids = ids, state = st, useAI = useAI } }
+	if (frame > 0 and st.stage and st.stage ~= "off") or (pendingAI ~= nil and gameID()) then
+		return { game = { gameID = gameID(), map = Game.mapName, team = myTeam, frame = frame, time = os and os.time and os.time() or nil,
+			ids = ids, state = st.stage and st or nil, useAI = useAI, pendingAI = pendingAI } }
 	end
 	return {}
 end

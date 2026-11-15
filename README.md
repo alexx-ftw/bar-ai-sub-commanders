@@ -132,8 +132,8 @@ Standing orders for the AI strategist can also be typed in chat: see [Orders fro
 
 The **Sub-Commanders Autopilot** widget (off by default; enable it in the widget list) plays the whole team
 through sub-commanders: it builds the first lab, then creates Economy, Defense, Army (with a second lab),
-Intelligence and the Air Force, gives each standing orders and adds labs when metal piles up. Enabled
-mid-game it takes over what you have. `/luaui autopilot ai` turns the AI strategist on for its
+Intelligence and the Air Force, and adds labs when metal piles up. Standing orders start empty so the
+player can add their own. Enabled mid-game it takes over what you have. `/luaui autopilot ai` turns the AI strategist on for its
 sub-commanders, `/luaui autopilot rules` off.
 
 To play **against** sub-commanders on your machine (macOS):
