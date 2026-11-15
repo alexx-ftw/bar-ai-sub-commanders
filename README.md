@@ -50,8 +50,10 @@ Prompts are built so each session's prefix stays stable, and turns mostly hit th
 - Beyond All Reason. Developed and tested on macOS with the
   [RecoilEngine Apple Silicon port](https://github.com/benbreen/RecoilEngine-AppleSilicon) (engine 2026.07.04);
   the widgets are plain BAR user widgets, so other platforms should work too.
-- User widgets that give unit orders must be allowed in the game. That is the default; a lobby host can
-  switch "unit control widgets" off, in which case the panel says so.
+- The game must allow both user widgets and their unit control. The host can disable either; BAR also
+  disables user widgets in anonymous team-colour mode for active players. In those games the panel may
+  not load, or may load without being able to issue orders. Only the host's permitted game settings can
+  change those restrictions.
 - For the AI strategist: Docker, or Go 1.26 + opencode. Plus an API key for an OpenAI-compatible endpoint
   whose model supports tool calling (the default config uses [code.lightning.ai](https://code.lightning.ai)).
 
@@ -130,8 +132,8 @@ Standing orders for the AI strategist can also be typed in chat: see [Orders fro
 
 The **Sub-Commanders Autopilot** widget (off by default; enable it in the widget list) plays the whole team
 through sub-commanders: it builds the first lab, then creates Economy, Defense, Army (with a second lab),
-Intelligence and the Air Force, gives each standing orders and adds labs when metal piles up. Enabled
-mid-game it takes over what you have. `/luaui autopilot ai` turns the AI strategist on for its
+Intelligence and the Air Force, and adds labs when metal piles up. Standing orders start empty so the
+player can add their own. Enabled mid-game it takes over what you have. `/luaui autopilot ai` turns the AI strategist on for its
 sub-commanders, `/luaui autopilot rules` off.
 
 To play **against** sub-commanders on your machine (macOS):
@@ -325,6 +327,7 @@ tasks: `DECIDER_ROUTES=fight=http://host:8011,unit=http://host:8012,turret=http:
 |---|---|
 | Header says **AI offline** | the bridge isn't running: `make up` (or `make run`); check `make logs` |
 | A sub-commander shows `strategist error: ...` | usually provider config or key; `make logs` has the details |
+| The panel is missing | check the game's log for `LuaUI: Disallowing User Widgets`; the host's settings or anonymous team-colour mode can prevent all local widgets from loading |
 | "Unit-control widgets are disabled in this game" | the lobby disallows them; sub-commanders can't give orders there |
 | "LuaSocket is disabled" in the console | set `LuaSocketEnabled = 1` in `springsettings.cfg` |
 
