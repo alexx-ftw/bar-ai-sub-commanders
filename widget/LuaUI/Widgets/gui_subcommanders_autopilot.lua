@@ -43,9 +43,9 @@ local function ownedBy(subID, defSet)
 	return list
 end
 
-local function newSub(role, units, zone, directive)
+local function newSub(role, units, zone)
 	local id = SC.create(role)
-	say(string.format("%s created with %d units: %s", role, units and #units or 0, directive))
+	say(string.format("%s created with %d units", role, units and #units or 0))
 	if units and #units > 0 then
 		SC.assign(id, units)
 	end
@@ -56,7 +56,6 @@ local function newSub(role, units, zone, directive)
 		SC.setAutonomy(id, "full")
 	end
 	SC.setAI(id, useAI)
-	SC.setDirective(id, directive)
 	return id
 end
 
@@ -95,7 +94,7 @@ local function start(frame)
 		return
 	end
 	if frame < 30 * 60 and #SC.list() == 0 then
-		ids.eco = newSub("economy", { com }, nil, "grow the economy: take every safe metal spot, keep energy ahead of spending")
+		ids.eco = newSub("economy", { com }, nil)
 		st.stage = "opener"
 		say("playing the team: " .. (useAI and "AI strategist on" or "rules only"))
 		return
@@ -118,13 +117,13 @@ local function start(frame)
 	for i = 2, #cons do
 		ecoUnits[#ecoUnits + 1] = cons[i]
 	end
-	ids.eco = newSub("economy", ecoUnits, nil, "grow the economy: take every safe metal spot, keep energy ahead of spending")
-	ids.def = newSub("defense", { cons[1] }, nil, "hold the side of the base facing the enemy")
+	ids.eco = newSub("economy", ecoUnits, nil)
+	ids.def = newSub("defense", { cons[1] }, nil)
 	local armyUnits = combat
 	for i = 2, #factories do
 		armyUnits[#armyUnits + 1] = factories[i]
 	end
-	ids.army = newSub("army", armyUnits, nil, "control our half of the map; attack when we are clearly stronger")
+	ids.army = newSub("army", armyUnits, nil)
 	st.stage = 3
 	st.startFrame = frame - 30 * 60 * 4
 	say("took over the team: " .. (useAI and "AI strategist on" or "rules only"))
@@ -148,20 +147,20 @@ local function step(n)
 	if st.stage == "opener" then
 		-- the economy (full autonomy) builds the first lab itself; Defense and Army once constructors are out
 		if #cons >= 3 or (t > 30 * 150 and #cons >= 1) then
-			ids.def = newSub("defense", { cons[1] }, nil, "hold the side of the base facing the enemy")
-			ids.army = newSub("army", {}, nil, "control our half of the map; attack when we are clearly stronger")
+			ids.def = newSub("defense", { cons[1] }, nil)
+			ids.army = newSub("army", {}, nil)
 			st.stage = 3
 		end
 	elseif st.stage == 3 and t >= 30 * 60 * 4 and #cons >= 3 then
 		-- recon early (radar net, scouts): raids that arrive unseen cost the most
-		ids.intel = newSub("intelligence", { cons[1] }, nil, "watch the approaches to our base and take out enemy radar")
+		ids.intel = newSub("intelligence", { cons[1] }, nil)
 		st.stage = 4
 	elseif st.stage == 4 and t >= 30 * 60 * 5 and #cons >= 3 then
 		SC.assign(ids.def, { cons[1] })
 		st.stage = 5
 	elseif st.stage == 5 and t >= 30 * 60 * 7 and #cons >= 3 then
 		-- the Air Force: air defence and air attack in one
-		ids.air = newSub("air", { cons[1] }, nil, "keep the base and the economy safe from air, own the sky, hunt their raids, and bomb their economy where their anti-air is weak")
+		ids.air = newSub("air", { cons[1] }, nil)
 		st.stage = 6
 	elseif st.stage == 6 and t >= 30 * 60 * 10 and #cons >= 3 and ids.air then
 		SC.assign(ids.air, { cons[1] })
