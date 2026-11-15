@@ -76,7 +76,9 @@ func (c *Client) Send(ctx context.Context, _ string, p opencode.Prompt) (*openco
 	cmd.Stdin = strings.NewReader(c.Instructions + "\n\n" + p.Text)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	cleanupProcess(cmd)
+	if err != nil {
 		return nil, withUncertainty(stdout.Bytes(), fmt.Errorf("codex: %w: %s", err, strings.TrimSpace(stderr.String())))
 	}
 	reply, err := parseReply(stdout.Bytes())

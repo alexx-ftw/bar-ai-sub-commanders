@@ -304,13 +304,16 @@ func (s *Strategist) due(sub game.Sub, frame int) string {
 		ss = &subState{}
 		s.subs[sub.ID] = ss
 	}
+	if s.reserved[sub.ID] != nil || ss.busy {
+		return ""
+	}
 	if ss.uncertain && ss.uncertainBaselinePending {
 		ss.uncertainRevision = sub.AIRevision
 		ss.uncertainBaselinePending = false
 	} else if ss.uncertain && sub.AIRevision >= ss.uncertainRevision+2 {
 		ss.uncertain, ss.retryFrame = false, 0
 	}
-	if s.reserved[sub.ID] != nil || ss.busy || ss.uncertain || frame < ss.retryFrame {
+	if ss.uncertain || frame < ss.retryFrame {
 		return ""
 	}
 	var why []string
@@ -506,9 +509,11 @@ func (s *Strategist) fail(sub game.Sub, ss *subState, frame int, connectionID ui
 	ss.retryFrame = frame + seconds(min(5*time.Second<<min(ss.failures-1, 5), 2*time.Minute))
 	var uncertain interface{ Uncertain() bool }
 	if errors.As(err, &uncertain) && uncertain.Uncertain() {
+		if !ss.uncertain || ss.uncertainBaselinePending {
+			ss.uncertainRevision = revision
+			ss.uncertainBaselinePending = baselinePending
+		}
 		ss.uncertain = true
-		ss.uncertainRevision = revision
-		ss.uncertainBaselinePending = ss.uncertainBaselinePending || baselinePending
 	}
 	needsReset := ss.uncertain
 	s.mu.Unlock()

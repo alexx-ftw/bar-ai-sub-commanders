@@ -10,3 +10,5 @@ import (
 func isolateProcess(*exec.Cmd) error {
 	return errors.New("codex backend requires process-group cancellation support")
 }
+
+func cleanupProcess(*exec.Cmd) {}

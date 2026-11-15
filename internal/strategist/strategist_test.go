@@ -269,3 +269,18 @@ func TestUncertainReconnectRequiresResetAfterFirstSnapshot(t *testing.T) {
 		t.Fatal("did not accept reset after first snapshot")
 	}
 }
+
+func TestFailurePreservesBaselineBeforePlayerReset(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(Config{}, game.NewServer("", log), nil, log)
+	ss := &subState{uncertain: true, uncertainRevision: 1}
+	s.subs[1] = ss
+	sub := game.Sub{ID: 1, AI: true, AIRevision: 3}
+	s.fail(sub, ss, 1, 0, uncertainTestError{})
+	if ss.uncertainRevision != 1 || ss.uncertainBaselinePending {
+		t.Fatalf("baseline changed after reset: %+v", ss)
+	}
+	if why := s.due(sub, 10000); why == "" {
+		t.Fatal("reset after tool failure was lost")
+	}
+}

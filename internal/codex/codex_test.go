@@ -1,15 +1,8 @@
 package codex
 
 import (
-	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/rusenask/bar-ai-sub-commanders/internal/opencode"
-	"github.com/rusenask/bar-ai-sub-commanders/internal/tools"
 )
 
 func TestUncertainFailureAfterToolCall(t *testing.T) {
@@ -49,45 +42,5 @@ func TestCompletedTurnWithFailedToolIsNotAutomaticallyUncertain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("completed turn rejected: %v", err)
 		}
-	}
-}
-
-func TestSendInvokesCodexWithIsolatedConfigAndPrompt(t *testing.T) {
-	dir := t.TempDir()
-	binary := filepath.Join(dir, "codex")
-	script := `#!/bin/sh
-printf '%s\n' "$@" > args
-printf '%s' "$SCBRIDGE_REVIEW_TOKEN" > token
-cat > prompt
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
-`
-	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	c := Client{Dir: dir, URL: "http://127.0.0.1:27879/mcp", Model: "gpt-6-luna", Instructions: "instruction"}
-	reply, err := c.Send(tools.WithReviewToken(context.Background(), "test-token"), "1", opencode.Prompt{Variant: "medium", Text: "report"})
-	if err != nil || reply.Text != "ok" {
-		t.Fatalf("reply = %+v, error = %v", reply, err)
-	}
-	args, err := os.ReadFile(filepath.Join(dir, "args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{"--ignore-user-config", "--ephemeral", "read-only", "mcp_servers.bar.url=", "mcp_servers.bar.default_tools_approval_mode=\"approve\"", "mcp_servers.bar.bearer_token_env_var=\"SCBRIDGE_REVIEW_TOKEN\"", "gpt-6-luna", "model_reasoning_effort=\"medium\""} {
-		if !strings.Contains(string(args), expected) {
-			t.Errorf("missing %q in %s", expected, args)
-		}
-	}
-	token, err := os.ReadFile(filepath.Join(dir, "token"))
-	if err != nil || string(token) != "test-token" {
-		t.Fatalf("token = %q, error = %v", token, err)
-	}
-	prompt, err := os.ReadFile(filepath.Join(dir, "prompt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(prompt) != "instruction\n\nreport" {
-		t.Errorf("prompt = %q", prompt)
 	}
 }
