@@ -163,16 +163,24 @@ func run() error {
 		g.Decide = router.Decide
 		log.Info("decision models", "default", *deciderURL, "routes", *deciderRts)
 	}
-	guard := func(sub int) error {
+	guard := func(ctx context.Context, sub int) (uint64, error) {
 		if strat == nil {
-			return errors.New("strategist not ready")
+			return 0, errors.New("strategist not ready")
 		}
-		return strat.Guard(sub)
+		return strat.Guard(ctx, sub)
 	}
 
 	// MCP tools first: opencode connects to them when it starts.
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", tools.Handler(g, guard))
+	var onToolFailure func(context.Context, int, error)
+	if *backend == "codex" {
+		onToolFailure = func(ctx context.Context, sub int, err error) {
+			if strat != nil {
+				strat.ToolFailure(ctx, sub, err)
+			}
+		}
+	}
+	mux.Handle("/mcp", tools.Handler(g, guard, onToolFailure))
 	ln, err := net.Listen("tcp", *mcpAddr)
 	if err != nil {
 		return fmt.Errorf("mcp listen: %w", err)
@@ -223,16 +231,17 @@ func run() error {
 	}
 
 	strat = strategist.New(strategist.Config{
-		Agent:       *agent,
-		Model:       m,
-		Variant:     *variant,
-		Interval:    *interval,
-		Urgent:      *urgent,
-		TurnTimeout: *turnTimeout,
-		CalmFactor:  *calm,
-		MaxInFlight: *maxReviews,
-		Record:      *record,
-		LessonsDir:  lessonsDir,
+		RequireReviewToken: *backend == "codex",
+		Agent:              *agent,
+		Model:              m,
+		Variant:            *variant,
+		Interval:           *interval,
+		Urgent:             *urgent,
+		TurnTimeout:        *turnTimeout,
+		CalmFactor:         *calm,
+		MaxInFlight:        *maxReviews,
+		Record:             *record,
+		LessonsDir:         lessonsDir,
 	}, g, oc, log)
 	selectedModel := *model
 	if *backend == "codex" {

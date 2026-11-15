@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
 
 	"github.com/rusenask/bar-ai-sub-commanders/internal/opencode"
+	"github.com/rusenask/bar-ai-sub-commanders/internal/tools"
 )
 
 type Client struct {
@@ -54,6 +56,10 @@ func (*Client) Abort(context.Context, string) error { return nil }
 
 func (c *Client) Send(ctx context.Context, _ string, p opencode.Prompt) (*opencode.Reply, error) {
 	args := []string{"exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "-c", `approval_policy="never"`, "-c", "mcp_servers.bar.url=" + strconv.Quote(c.URL), "-c", `mcp_servers.bar.default_tools_approval_mode="approve"`}
+	token := tools.ReviewToken(ctx)
+	if token != "" {
+		args = append(args, "-c", `mcp_servers.bar.bearer_token_env_var="SCBRIDGE_REVIEW_TOKEN"`)
+	}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
 	}
@@ -62,6 +68,10 @@ func (c *Client) Send(ctx context.Context, _ string, p opencode.Prompt) (*openco
 	}
 	args = append(args, "-")
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	if err := isolateProcess(cmd); err != nil {
+		return nil, err
+	}
+	cmd.Env = append(os.Environ(), "SCBRIDGE_REVIEW_TOKEN="+token)
 	cmd.Dir = c.Dir
 	cmd.Stdin = strings.NewReader(c.Instructions + "\n\n" + p.Text)
 	var stdout, stderr bytes.Buffer
@@ -88,10 +98,6 @@ func parseReply(data []byte) (*opencode.Reply, error) {
 				Server string `json:"server"`
 				Tool   string `json:"tool"`
 				Status string `json:"status"`
-				Result struct {
-					IsError      bool `json:"is_error"`
-					IsErrorCamel bool `json:"isError"`
-				} `json:"result"`
 			} `json:"item"`
 			Usage struct {
 				Input  float64 `json:"input_tokens"`
@@ -118,9 +124,6 @@ func parseReply(data []byte) (*opencode.Reply, error) {
 			case "agent_message":
 				reply.Text = event.Item.Text
 			case "mcp_tool_call":
-				if event.Item.Status == "failed" || event.Item.Result.IsError || event.Item.Result.IsErrorCamel {
-					return nil, uncertainError{fmt.Errorf("game tool %s failed after it may have acted", event.Item.Tool)}
-				}
 				reply.Tools = append(reply.Tools, opencode.ToolCall{Tool: event.Item.Tool, Status: event.Item.Status})
 			}
 		}

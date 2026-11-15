@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,7 +17,48 @@ import (
 )
 
 // Guard decides whether the agent may act for a sub-commander right now.
-type Guard func(subID int) error
+type Guard func(context.Context, int) (uint64, error)
+
+type reviewTokenKey struct{}
+
+func WithReviewToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, reviewTokenKey{}, token)
+}
+
+func ReviewToken(ctx context.Context) string {
+	token, _ := ctx.Value(reviewTokenKey{}).(string)
+	return token
+}
+
+type guardedCalls struct {
+	mu        sync.Mutex
+	guard     Guard
+	call      func(context.Context, uint64, int, string, map[string]any) (json.RawMessage, error)
+	onFailure func(context.Context, int, error)
+}
+
+func (c *guardedCalls) Do(ctx context.Context, sub int, op string, args map[string]any) (json.RawMessage, error) {
+	if c.onFailure != nil {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	id, err := c.guard(ctx, sub)
+	if err != nil {
+		return nil, err
+	}
+	data, err := c.call(ctx, id, sub, op, args)
+	if err != nil && c.onFailure != nil {
+		switch op {
+		case "terrain", "map_view", "build_options", "structures":
+		default:
+			c.onFailure(ctx, sub, err)
+		}
+	}
+	return data, err
+}
 
 type subArg struct {
 	SubID int `json:"sub_id" jsonschema:"your sub-commander id (given in every report)"`
@@ -148,8 +190,9 @@ func asJSON(v any) *mcp.CallToolResult {
 }
 
 // Handler returns an HTTP handler serving the MCP tools (streamable HTTP).
-func Handler(g *game.Server, guard Guard) http.Handler {
+func Handler(g *game.Server, guard Guard, onFailure func(context.Context, int, error)) http.Handler {
 	s := mcp.NewServer(&mcp.Implementation{Name: "bar", Version: "0.1.0"}, nil)
+	calls := &guardedCalls{guard: guard, call: g.DoFor, onFailure: onFailure}
 
 	// tell_player is rate limited per sub-commander so a worried model can't spam the console
 	var tellMu sync.Mutex
@@ -157,10 +200,7 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 	const tellEveryFrames = 30 * 90
 
 	act := func(ctx context.Context, sub int, op string, args map[string]any, done string) *mcp.CallToolResult {
-		if err := guard(sub); err != nil {
-			return fail(err)
-		}
-		data, err := g.Do(ctx, sub, op, args)
+		data, err := calls.Do(ctx, sub, op, args)
 		if err != nil {
 			return fail(err)
 		}
@@ -174,7 +214,7 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 		Name:        "get_overview",
 		Description: "Whole-team picture: economy, every sub-commander (role, posture, zones, threats, last activity) and enemy intel. Use when you need more than your report.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in subArg) (*mcp.CallToolResult, any, error) {
-		if err := guard(in.SubID); err != nil {
+		if _, err := guard(ctx, in.SubID); err != nil {
 			return fail(err), nil, nil
 		}
 		info, state, ok := g.Snapshot()
@@ -196,7 +236,7 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 		if t != nil {
 			return t, nil
 		}
-		data, err := g.Do(ctx, sub, "terrain", map[string]any{"x1": b.X1, "z1": b.Z1, "x2": b.X2, "z2": b.Z2, "cells": cells})
+		data, err := calls.Do(ctx, sub, "terrain", map[string]any{"x1": b.X1, "z1": b.Z1, "x2": b.X2, "z2": b.Z2, "cells": cells})
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +256,7 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 		Name:        "get_map_view",
 		Description: "A top-down picture of the battlefield: terrain (water, steep slopes, cliffs), a coordinate grid in elmos, every sub-commander's zones, metal spots (free or taken), our and allied units and structures, enemies in sight and recent sightings. view=map shows the whole map, view=zones a close-up around your zones.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mapArgs) (*mcp.CallToolResult, any, error) {
-		if err := guard(in.SubID); err != nil {
+		if _, err := guard(ctx, in.SubID); err != nil {
 			return fail(err), nil, nil
 		}
 		info, _, ok := g.Snapshot()
@@ -227,7 +267,7 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 		if in.View == "zones" {
 			view, cells = "zones", 192
 		}
-		data, err := g.Do(ctx, in.SubID, "map_view", map[string]any{"view": view})
+		data, err := calls.Do(ctx, in.SubID, "map_view", map[string]any{"view": view})
 		if err != nil {
 			return fail(err), nil, nil
 		}
@@ -449,5 +489,9 @@ func Handler(g *game.Server, guard Guard) http.Handler {
 		return r, nil, nil
 	})
 
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		handler.ServeHTTP(w, r.WithContext(WithReviewToken(r.Context(), token)))
+	})
 }

@@ -370,16 +370,30 @@ func (s *Server) SnapshotWithID() (*Info, *State, bool, uint64) {
 func (s *Server) write(msg message) error {
 	s.mu.Lock()
 	conn := s.conn
+	connectionID := s.connectionID
 	s.mu.Unlock()
 	if conn == nil {
 		return ErrOffline
 	}
+	return s.writeTo(context.Background(), conn, connectionID, msg)
+}
+
+func (s *Server) writeTo(ctx context.Context, conn Conn, connectionID uint64, msg message) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.conn != conn || s.connectionID != connectionID {
+		s.mu.Unlock()
+		return ErrOffline
+	}
+	s.mu.Unlock()
 	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		d.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	}
@@ -389,9 +403,26 @@ func (s *Server) write(msg message) error {
 
 // Do sends an action to a sub-commander and waits for the widget's answer.
 func (s *Server) Do(ctx context.Context, sub int, op string, args map[string]any) (json.RawMessage, error) {
+	return s.do(ctx, 0, sub, op, args)
+}
+
+// DoFor sends only if the connection authorized by the caller is still current.
+func (s *Server) DoFor(ctx context.Context, connectionID uint64, sub int, op string, args map[string]any) (json.RawMessage, error) {
+	if connectionID == 0 {
+		return nil, ErrOffline
+	}
+	return s.do(ctx, connectionID, sub, op, args)
+}
+
+func (s *Server) do(ctx context.Context, expectedID uint64, sub int, op string, args map[string]any) (json.RawMessage, error) {
 	id := s.nextID.Add(1)
 	ch := make(chan result, 1)
 	s.mu.Lock()
+	conn, connectionID := s.conn, s.connectionID
+	if conn == nil || (expectedID != 0 && connectionID != expectedID) {
+		s.mu.Unlock()
+		return nil, ErrOffline
+	}
 	s.pending[id] = ch
 	s.mu.Unlock()
 	defer func() {
@@ -399,7 +430,7 @@ func (s *Server) Do(ctx context.Context, sub int, op string, args map[string]any
 		delete(s.pending, id)
 		s.mu.Unlock()
 	}()
-	if err := s.write(message{Type: "action", ID: messageID(id), Sub: sub, Op: op, Args: args}); err != nil {
+	if err := s.writeTo(ctx, conn, connectionID, message{Type: "action", ID: messageID(id), Sub: sub, Op: op, Args: args}); err != nil {
 		return nil, err
 	}
 	// 30 s: over the file transport (Docker Desktop's mount, polled) a widget's answer arrived after the
@@ -435,6 +466,20 @@ func (s *Server) decide(msg message) {
 // Tell sends an action without waiting (status lines, notes).
 func (s *Server) Tell(sub int, op string, args map[string]any) {
 	if err := s.write(message{Type: "action", ID: messageID(s.nextID.Add(1)), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
+		s.log.Warn("tell", "op", op, "err", err)
+	}
+}
+
+// TellFor only sends a status or note to the connection that started the review.
+func (s *Server) TellFor(connectionID uint64, sub int, op string, args map[string]any) {
+	s.mu.Lock()
+	conn := s.conn
+	current := s.connectionID
+	s.mu.Unlock()
+	if conn == nil || connectionID == 0 || current != connectionID {
+		return
+	}
+	if err := s.writeTo(context.Background(), conn, connectionID, message{Type: "action", ID: messageID(s.nextID.Add(1)), Sub: sub, Op: op, Args: args}); err != nil && !errors.Is(err, ErrOffline) {
 		s.log.Warn("tell", "op", op, "err", err)
 	}
 }

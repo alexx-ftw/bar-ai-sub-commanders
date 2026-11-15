@@ -70,6 +70,7 @@ func TestBusySubsAreReviewedSooner(t *testing.T) {
 			t.Fatal("first report")
 		}
 		s.subs[sub.ID].busy, s.subs[sub.ID].reports = false, 1
+		delete(s.reserved, sub.ID)
 	}
 	at := seconds(20 * time.Second)
 	if why := s.due(calm, at); why != "" {

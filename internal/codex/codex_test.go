@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rusenask/bar-ai-sub-commanders/internal/opencode"
+	"github.com/rusenask/bar-ai-sub-commanders/internal/tools"
 )
 
 func TestUncertainFailureAfterToolCall(t *testing.T) {
@@ -37,7 +38,7 @@ func TestParseReply(t *testing.T) {
 	}
 }
 
-func TestCompletedTurnWithFailedToolIsUncertain(t *testing.T) {
+func TestCompletedTurnWithFailedToolIsNotAutomaticallyUncertain(t *testing.T) {
 	for _, tool := range []string{
 		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"add_zone","status":"failed"}}`,
 		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"add_zone","status":"completed","result":{"is_error":true}}}`,
@@ -45,9 +46,8 @@ func TestCompletedTurnWithFailedToolIsUncertain(t *testing.T) {
 	} {
 		data := tool + "\n" + `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n" + `{"type":"turn.completed"}`
 		_, err := parseReply([]byte(data))
-		var marker interface{ Uncertain() bool }
-		if !errors.As(err, &marker) || !marker.Uncertain() {
-			t.Fatalf("failed tool accepted: %v", err)
+		if err != nil {
+			t.Fatalf("completed turn rejected: %v", err)
 		}
 	}
 }
@@ -57,6 +57,7 @@ func TestSendInvokesCodexWithIsolatedConfigAndPrompt(t *testing.T) {
 	binary := filepath.Join(dir, "codex")
 	script := `#!/bin/sh
 printf '%s\n' "$@" > args
+printf '%s' "$SCBRIDGE_REVIEW_TOKEN" > token
 cat > prompt
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
 `
@@ -65,7 +66,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	c := Client{Dir: dir, URL: "http://127.0.0.1:27879/mcp", Model: "gpt-6-luna", Instructions: "instruction"}
-	reply, err := c.Send(context.Background(), "1", opencode.Prompt{Variant: "medium", Text: "report"})
+	reply, err := c.Send(tools.WithReviewToken(context.Background(), "test-token"), "1", opencode.Prompt{Variant: "medium", Text: "report"})
 	if err != nil || reply.Text != "ok" {
 		t.Fatalf("reply = %+v, error = %v", reply, err)
 	}
@@ -73,10 +74,14 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"o
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"--ignore-user-config", "--ephemeral", "read-only", "mcp_servers.bar.url=", "mcp_servers.bar.default_tools_approval_mode=\"approve\"", "gpt-6-luna", "model_reasoning_effort=\"medium\""} {
+	for _, expected := range []string{"--ignore-user-config", "--ephemeral", "read-only", "mcp_servers.bar.url=", "mcp_servers.bar.default_tools_approval_mode=\"approve\"", "mcp_servers.bar.bearer_token_env_var=\"SCBRIDGE_REVIEW_TOKEN\"", "gpt-6-luna", "model_reasoning_effort=\"medium\""} {
 		if !strings.Contains(string(args), expected) {
 			t.Errorf("missing %q in %s", expected, args)
 		}
+	}
+	token, err := os.ReadFile(filepath.Join(dir, "token"))
+	if err != nil || string(token) != "test-token" {
+		t.Fatalf("token = %q, error = %v", token, err)
 	}
 	prompt, err := os.ReadFile(filepath.Join(dir, "prompt"))
 	if err != nil {
